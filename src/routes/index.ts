@@ -8,7 +8,6 @@ import { healthRouter } from "./health.routes.js";
 import { reportRouter } from "./report.routes.js";
 import { invoiceRouter } from "./invoice.routes.js";
 import { memberRouter } from "./member.routes.js";
-import { organizationRouter } from "./organization.routes.js";
 import { paymentRouter } from "./payment.routes.js";
 import { productRouter } from "./product.routes.js";
 import { teamRouter } from "./team.routes.js";
@@ -26,7 +25,6 @@ apiRouter.use("/customers", customerRouter);
 apiRouter.use("/invoices", invoiceRouter);
 apiRouter.use("/payments", paymentRouter);
 apiRouter.use("/products", productRouter);
-apiRouter.use("/organizations", organizationRouter);
 apiRouter.use("/teams", teamRouter);
 
 export { apiRouter };

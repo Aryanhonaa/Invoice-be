@@ -191,17 +191,10 @@ describe("RBAC", () => {
     expect(response.body.error.code).toBe("FORBIDDEN");
   });
 
-  it("prevents unauthorized organization access", async () => {
-    const { orgB, teamB } = await seedActors();
+  it("prevents access to another team's records", async () => {
+    const { teamB } = await seedActors();
     const adminCookies = await loginAs("admin-a@example.com");
     const memberCookies = await loginAs("member-a@example.com");
-
-    const orgResponse = await request(app)
-      .get(`/api/organizations/${orgB.id}`)
-      .set("Cookie", adminCookies);
-
-    expect(orgResponse.status).toBe(403);
-    expect(orgResponse.body.error.code).toBe("FORBIDDEN");
 
     const memberCreate = await request(app)
       .post("/api/members")
@@ -211,7 +204,7 @@ describe("RBAC", () => {
         password,
         firstName: "Other",
         lastName: "Org",
-        organizationId: orgB.id,
+        organizationId: teamB.organizationId,
       });
 
     expect(memberCreate.status).toBe(403);
