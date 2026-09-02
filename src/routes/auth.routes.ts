@@ -9,13 +9,13 @@ import {
   removeAvatarController,
   updateProfileController,
 } from "../controllers/auth.controller.js";
-import { loginRateLimit } from "../middleware/login-rate-limit.js";
+// import { loginRateLimit } from "../middleware/login-rate-limit.js";
 import { requireAuth } from "../middleware/require-auth.js";
 import { asyncHandler } from "../utils/async-handler.js";
 
 const authRouter = Router();
 
-authRouter.post("/login", loginRateLimit, asyncHandler(loginController));
+authRouter.post("/login", /* loginRateLimit, */ asyncHandler(loginController));
 authRouter.post("/logout", requireAuth, asyncHandler(logoutController));
 authRouter.get("/me", requireAuth, asyncHandler(meController));
 authRouter.patch("/profile", requireAuth, asyncHandler(updateProfileController));
