@@ -16,7 +16,7 @@ export const REPORT_KINDS = [
 
 export type ReportKind = (typeof REPORT_KINDS)[number];
 
-export type ReportScopeKind = "SYSTEM" | "ORGANIZATION" | "MEMBER";
+export type ReportScopeKind = "SYSTEM" | "ORGANIZATION" | "MEMBER" | "ADMIN";
 
 export interface ReportTableColumn {
   key: string;
@@ -55,7 +55,7 @@ export interface ReportView {
   role: UserRole;
   scope: ReportScopeKind;
   organizationId: string | null;
-  teamId: string | null;
+  memberId?: string | null;
   currency: string;
   overview: ReportOverview;
   metrics: Record<string, string | number>;
@@ -67,9 +67,7 @@ export interface ReportView {
 
 export interface ReportQueryScope {
   organizationId?: string;
-  assignedTeamId?: string;
-  createdById?: string;
-  assignedMemberId?: string;
-  assignedTeamIds?: string[];
+  userIds?: string[];
+  administratorId?: string;
   expenseCreatedById?: string;
 }

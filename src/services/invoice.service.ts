@@ -1,30 +1,33 @@
 import type { CatalogKind, InvoiceStatus } from "@prisma/client";
-import { ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError, ValidationError } from "../lib/errors.js";
-import { getEmailProvider } from "../integrations/email/provider.js";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../lib/errors.js";
+import { sendInvoiceEmail } from "../integrations/email/send-invoice-email.js";
 import { assertInvoiceAccess } from "../lib/invoice-access.js";
+import { generateInvoiceShareToken, invoiceShareUrl } from "../lib/invoice-share.js";
+import { toPublicInvoiceView, type PublicInvoiceView } from "../lib/invoice-public-view.js";
+import { assertCustomerScope, resolveInvoiceUserScope } from "../lib/admin-scope.js";
 import { calculateInvoiceTotals } from "../lib/invoice-calc.js";
 import {
   canCancelInvoice,
   canDeleteInvoice,
   canEditInvoice,
-  canSendInvoice,
 } from "../lib/invoice-status.js";
 import { toInvoiceView } from "../lib/invoice-view.js";
-import { money, moneyString } from "../lib/money.js";
+import { moneyString } from "../lib/money.js";
 import { assertDueDateNotBeforeInvoiceDate, parseDateValue } from "../lib/parse-date.js";
 import { findCustomerById } from "../repositories/customer.repository.js";
 import {
   createInvoice,
+  countInvoiceSummary,
   deleteInvoice,
   findInvoiceById,
   findInvoiceByOrganizationAndNumber,
+  findInvoiceByShareToken,
   findLatestInvoiceNumber,
   listInvoices,
   updateInvoice,
 } from "../repositories/invoice.repository.js";
 import { findOrganizationById } from "../repositories/organization.repository.js";
 import { findProductById } from "../repositories/product.repository.js";
-import { findTeamById, isTeamMember, listTeamsForUser } from "../repositories/team.repository.js";
 import { findMemberById } from "../repositories/user.repository.js";
 import type { AddressInput, AuthUser } from "../types/auth.js";
 import type { InvoiceView } from "../types/invoice.js";
@@ -32,8 +35,8 @@ import {
   resolveManagedOrganizationId,
   scopedTenantOrganizationId,
 } from "../utils/organization-scope.js";
-import { resolveTeamScope } from "../utils/team-scope.js";
 import { recordAudit } from "./audit.service.js";
+import { getOrganizationLogoUrl } from "./organization-logo.service.js";
 import { recordManualPayment } from "./payment.service.js";
 
 interface InvoiceItemInput {
@@ -43,6 +46,25 @@ interface InvoiceItemInput {
   unitPrice?: string;
   discount?: string;
   taxRate?: string;
+}
+
+async function withOrganizationLogo(
+  view: InvoiceView,
+  organizationId: string,
+): Promise<InvoiceView> {
+  if (!view.organization) {
+    return view;
+  }
+  const logoUrl = await getOrganizationLogoUrl(organizationId, {
+    expiresInSeconds: 60 * 30,
+  });
+  return {
+    ...view,
+    organization: {
+      ...view.organization,
+      logoUrl,
+    },
+  };
 }
 
 async function nextInvoiceNumber(organizationId: string): Promise<string> {
@@ -79,7 +101,6 @@ async function snapshotItems(
   for (const [index, item] of items.entries()) {
     let description = item.description?.trim() ?? "";
     let unitPrice = item.unitPrice;
-    let taxRate = item.taxRate;
     let productId: string | null = null;
     let catalogKind: CatalogKind | null = null;
     let sku: string | null = null;
@@ -96,7 +117,6 @@ async function snapshotItems(
       unit = product.unit;
       description = description || product.name;
       unitPrice = unitPrice ?? product.unitPrice.toString();
-      taxRate = taxRate ?? product.taxRate?.toString();
     }
 
     if (!description) {
@@ -114,8 +134,8 @@ async function snapshotItems(
       description,
       quantity: item.quantity,
       unitPrice,
-      discount: item.discount ?? "0",
-      taxRate: taxRate ?? null,
+      discount: "0",
+      taxRate: null,
       sortOrder: index,
     });
   }
@@ -126,8 +146,6 @@ async function snapshotItems(
       prepared.map((item) => ({
         quantity: item.quantity,
         unitPrice: item.unitPrice,
-        discount: item.discount,
-        taxRate: item.taxRate ?? undefined,
       })),
     );
   } catch (error) {
@@ -164,39 +182,28 @@ function addressFromCustomer(
   };
 }
 
-async function resolveAssignment(
+async function resolveMemberAssignment(
   actor: AuthUser,
   organizationId: string,
-  assignedTeamId?: string,
   assignedMemberId?: string,
-): Promise<{ assignedTeamId: string | null; assignedMemberId: string | null }> {
-  const teamId = assignedTeamId ?? null;
-  const memberId = assignedMemberId ?? null;
-
-  if (teamId) {
-    const team = await findTeamById(teamId);
-    if (!team || team.organizationId !== organizationId) {
-      throw new ForbiddenError("Assigned team must belong to the organization");
-    }
-    if (actor.role === "MEMBER" && !(await isTeamMember(teamId, actor.id))) {
-      throw new ForbiddenError("You can only assign invoices to a team you belong to");
-    }
+): Promise<string | null> {
+  const memberId = assignedMemberId ?? (actor.role === "MEMBER" ? actor.id : null);
+  if (!memberId) {
+    return null;
   }
 
-  if (memberId) {
-    const member = await findMemberById(memberId);
-    if (!member || member.organizationId !== organizationId) {
-      throw new ForbiddenError("Assigned member must belong to the organization");
-    }
-    if (actor.role === "MEMBER" && memberId !== actor.id) {
-      throw new ForbiddenError("You can only assign invoices to yourself");
-    }
-    if (teamId && !(await isTeamMember(teamId, memberId))) {
-      throw new ValidationError("Assigned member must belong to the assigned team");
-    }
+  const member = await findMemberById(memberId);
+  if (!member || member.organizationId !== organizationId) {
+    throw new ForbiddenError("Assigned member must belong to the organization");
+  }
+  if (actor.role === "MEMBER" && memberId !== actor.id) {
+    throw new ForbiddenError("You can only assign invoices to yourself");
+  }
+  if (actor.role === "ADMIN" && member.administratorId !== actor.id) {
+    throw new ForbiddenError("You can only assign invoices to your members");
   }
 
-  return { assignedTeamId: teamId, assignedMemberId: memberId };
+  return memberId;
 }
 
 export async function listInvoiceAccounts(
@@ -206,7 +213,6 @@ export async function listInvoiceAccounts(
     status?: InvoiceStatus;
     customerId?: string;
     organizationId?: string;
-    teamId?: string;
     dateFrom?: string;
     dateTo?: string;
     sort?: "invoiceDate" | "dueDate" | "total" | "invoiceNumber" | "createdAt";
@@ -216,11 +222,7 @@ export async function listInvoiceAccounts(
   },
 ): Promise<{ items: InvoiceView[]; page: number; pageSize: number; total: number; totalPages: number }> {
   const organizationId = await scopedTenantOrganizationId(actor, query.organizationId);
-  const { teamId } = await resolveTeamScope(actor, {
-    organizationId,
-    teamId: query.teamId,
-  });
-  const memberTeams = actor.role === "MEMBER" ? await listTeamsForUser(actor.id) : [];
+  const userScope = await resolveInvoiceUserScope(actor);
   const now = new Date();
 
   const { items, total } = await listInvoices({
@@ -229,10 +231,7 @@ export async function listInvoiceAccounts(
     overdue: query.status === "OVERDUE",
     customerId: query.customerId,
     organizationId,
-    createdById: actor.role === "MEMBER" && !teamId ? actor.id : undefined,
-    assignedMemberId: actor.role === "MEMBER" && !teamId ? actor.id : undefined,
-    assignedTeamIds: actor.role === "MEMBER" && !teamId ? memberTeams.map((team) => team.id) : undefined,
-    assignedTeamId: teamId ?? undefined,
+    userIds: userScope?.userIds,
     dateFrom: query.dateFrom ? parseDateValue(query.dateFrom, "dateFrom") : undefined,
     dateTo: query.dateTo ? parseDateValue(query.dateTo, "dateTo") : undefined,
     sort: query.sort,
@@ -251,13 +250,36 @@ export async function listInvoiceAccounts(
   };
 }
 
+export async function getInvoiceSummaryCounts(actor: AuthUser): Promise<{
+  all: number;
+  paid: number;
+  outstanding: number;
+  overview: number;
+  void: number;
+}> {
+  const organizationId = await scopedTenantOrganizationId(actor);
+
+  if (actor.role === "MEMBER") {
+    return countInvoiceSummary({
+      organizationId,
+      createdById: actor.id,
+    });
+  }
+
+  const userScope = await resolveInvoiceUserScope(actor);
+  return countInvoiceSummary({
+    organizationId,
+    userIds: userScope?.userIds,
+  });
+}
+
 export async function getInvoiceAccount(actor: AuthUser, id: string): Promise<InvoiceView> {
   const invoice = await findInvoiceById(id);
   if (!invoice) {
     throw new NotFoundError("Invoice not found");
   }
   await assertInvoiceAccess(actor, invoice);
-  return toInvoiceView(invoice);
+  return withOrganizationLogo(toInvoiceView(invoice), invoice.organizationId);
 }
 
 export async function createInvoiceAccount(
@@ -271,7 +293,6 @@ export async function createInvoiceAccount(
     currency?: string;
     notes?: string;
     terms?: string;
-    assignedTeamId?: string;
     assignedMemberId?: string;
     items: InvoiceItemInput[];
   },
@@ -286,23 +307,16 @@ export async function createInvoiceAccount(
   if (!customer || customer.organizationId !== organizationId) {
     throw new ForbiddenError("Customer must belong to the organization");
   }
+  await assertCustomerScope(actor, customer);
 
   const invoiceDate = parseDateValue(input.invoiceDate, "Invoice date");
   const dueDate = parseDateValue(input.dueDate, "Due date");
   assertDueDateNotBeforeInvoiceDate(invoiceDate, dueDate);
 
-  let assignedTeamId = input.assignedTeamId;
-  const assignedMemberId =
-    input.assignedMemberId ?? (actor.role === "MEMBER" ? actor.id : undefined);
-  if (!assignedTeamId && (actor.role === "ADMIN" || actor.role === "MEMBER")) {
-    const teams = await listTeamsForUser(actor.id);
-    assignedTeamId = teams[0]?.id;
-  }
-  const assignment = await resolveAssignment(
+  const assignedMemberId = await resolveMemberAssignment(
     actor,
     organizationId,
-    assignedTeamId,
-    assignedMemberId,
+    input.assignedMemberId ?? (actor.role === "MEMBER" ? actor.id : undefined),
   );
 
   const invoiceNumber = input.invoiceNumber?.trim() || (await nextInvoiceNumber(organizationId));
@@ -317,8 +331,7 @@ export async function createInvoiceAccount(
     organizationId,
     customerId: customer.id,
     createdById: actor.id,
-    assignedTeamId: assignment.assignedTeamId,
-    assignedMemberId: assignment.assignedMemberId,
+    assignedMemberId,
     invoiceNumber,
     invoiceDate,
     dueDate,
@@ -357,7 +370,6 @@ export async function updateInvoiceAccount(
     currency?: string;
     notes?: string | null;
     terms?: string | null;
-    assignedTeamId?: string | null;
     assignedMemberId?: string | null;
     items?: InvoiceItemInput[];
     status?: unknown;
@@ -394,13 +406,14 @@ export async function updateInvoiceAccount(
     }
   }
 
-  const assignment = await resolveAssignment(
+  const nextAssignedMemberId =
+    input.assignedMemberId === undefined
+      ? invoice.assignedMemberId
+      : input.assignedMemberId;
+  const assignedMemberId = await resolveMemberAssignment(
     actor,
     invoice.organizationId,
-    input.assignedTeamId === undefined ? invoice.assignedTeamId ?? undefined : input.assignedTeamId ?? undefined,
-    input.assignedMemberId === undefined
-      ? invoice.assignedMemberId ?? undefined
-      : input.assignedMemberId ?? undefined,
+    nextAssignedMemberId ?? undefined,
   );
 
   const invoiceDate = input.invoiceDate
@@ -421,8 +434,7 @@ export async function updateInvoiceAccount(
     currency: input.currency,
     notes: input.notes,
     terms: input.terms,
-    assignedTeamId: assignment.assignedTeamId,
-    assignedMemberId: assignment.assignedMemberId,
+    assignedMemberId,
     ...(snapshot
       ? {
           subtotal: snapshot.totals.subtotal,
@@ -480,8 +492,8 @@ export async function sendInvoiceAccount(actor: AuthUser, id: string): Promise<I
   }
   await assertInvoiceAccess(actor, invoice);
 
-  if (!canSendInvoice(invoice.status)) {
-    throw new ForbiddenError("Only draft invoices can be sent");
+  if (invoice.status === "CANCELLED") {
+    throw new ForbiddenError("Cancelled invoices cannot be emailed");
   }
 
   const recipient = invoice.customer.email?.trim();
@@ -489,25 +501,30 @@ export async function sendInvoiceAccount(actor: AuthUser, id: string): Promise<I
     throw new ValidationError("This customer does not have an email address");
   }
 
-  const mailer = getEmailProvider();
-  if (!mailer.isConfigured()) {
-    throw new ServiceUnavailableError("Email sending is not configured yet.", "EMAIL_NOT_CONFIGURED");
+  const shareable = await ensureInvoiceShareToken(invoice.id, invoice.shareToken);
+
+  try {
+    await sendInvoiceEmail(shareable);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Email failed";
+    await updateInvoice(invoice.id, {
+      emailStatus: "FAILED",
+      emailLastError: message.slice(0, 500),
+    });
+    throw error;
   }
 
-  await mailer.sendInvoiceEmail({
-    to: recipient,
-    customerName: invoice.customer.name,
-    invoiceNumber: invoice.invoiceNumber,
-    amount: moneyString(money(invoice.total.toString())),
-    currency: invoice.currency,
-    dueDate: invoice.dueDate.toISOString(),
-    companyName: invoice.organization?.name ?? "Company",
-  });
-
-  const zeroTotal = money(invoice.total.toString()).lte(0);
+  const issued = invoice.status === "DRAFT";
   const updated = await updateInvoice(invoice.id, {
-    status: zeroTotal ? "PAID" : "SENT",
-    sentAt: new Date(),
+    emailStatus: "SENT",
+    emailSentAt: new Date(),
+    emailLastError: null,
+    ...(issued
+      ? {
+          status: "SENT" as const,
+          sentAt: new Date(),
+        }
+      : {}),
   });
 
   await recordAudit({
@@ -516,10 +533,70 @@ export async function sendInvoiceAccount(actor: AuthUser, id: string): Promise<I
     entity: "Invoice",
     entityId: updated.id,
     organizationId: updated.organizationId,
-    metadata: { invoiceNumber: updated.invoiceNumber },
+    metadata: { invoiceNumber: updated.invoiceNumber, channel: "email" },
   });
 
   return toInvoiceView(updated);
+}
+
+async function ensureInvoiceShareToken(
+  invoiceId: string,
+  existingToken: string | null,
+): Promise<NonNullable<Awaited<ReturnType<typeof findInvoiceById>>>> {
+  if (existingToken) {
+    const current = await findInvoiceById(invoiceId);
+    if (!current) {
+      throw new NotFoundError("Invoice not found");
+    }
+    return current;
+  }
+
+  const updated = await updateInvoice(invoiceId, {
+    shareToken: generateInvoiceShareToken(),
+  });
+  return updated;
+}
+
+export async function getInvoiceShareLink(
+  actor: AuthUser,
+  id: string,
+): Promise<{ url: string }> {
+  const invoice = await findInvoiceById(id);
+  if (!invoice) {
+    throw new NotFoundError("Invoice not found");
+  }
+  await assertInvoiceAccess(actor, invoice);
+
+  const shareable = await ensureInvoiceShareToken(invoice.id, invoice.shareToken);
+  if (!shareable.shareToken) {
+    throw new ValidationError("Unable to create an invoice link");
+  }
+
+  return { url: invoiceShareUrl(shareable.shareToken) };
+}
+
+export async function getPublicInvoiceByToken(token: string): Promise<PublicInvoiceView> {
+  const invoice = await findInvoiceByShareToken(token);
+  if (!invoice || invoice.status === "CANCELLED") {
+    throw new NotFoundError("Invoice not found");
+  }
+
+  let record = invoice;
+  if (invoice.status === "SENT") {
+    await updateInvoice(invoice.id, {
+      status: "VIEWED",
+      viewedAt: invoice.viewedAt ?? new Date(),
+    });
+    const viewed = await findInvoiceById(invoice.id);
+    if (viewed) {
+      record = viewed;
+    }
+  }
+
+  const logoUrl = await getOrganizationLogoUrl(record.organizationId, {
+    expiresInSeconds: 60 * 60,
+  });
+  return toPublicInvoiceView(record, undefined, logoUrl);
 }
 
 export async function duplicateInvoiceAccount(actor: AuthUser, id: string): Promise<InvoiceView> {

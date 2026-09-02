@@ -7,8 +7,10 @@ import {
   downloadInvoicePdfController,
   duplicateInvoiceController,
   getInvoiceController,
+  getInvoiceSummaryController,
   listInvoicesController,
   recordInvoicePaymentController,
+  shareInvoiceLinkController,
   sendInvoiceController,
   updateInvoiceController,
 } from "../controllers/invoice.controller.js";
@@ -25,6 +27,11 @@ invoiceRouter.get(
   requirePermission(Permissions.INVOICES_VIEW),
   asyncHandler(listInvoicesController),
 );
+invoiceRouter.get(
+  "/summary",
+  requirePermission(Permissions.INVOICES_VIEW),
+  asyncHandler(getInvoiceSummaryController),
+);
 invoiceRouter.post(
   "/",
   requirePermission(Permissions.INVOICES_CREATE),
@@ -39,6 +46,11 @@ invoiceRouter.post(
   "/:id/send",
   requirePermission(Permissions.INVOICES_SEND),
   asyncHandler(sendInvoiceController),
+);
+invoiceRouter.post(
+  "/:id/share-link",
+  requirePermission(Permissions.INVOICES_VIEW),
+  asyncHandler(shareInvoiceLinkController),
 );
 invoiceRouter.post(
   "/:id/duplicate",

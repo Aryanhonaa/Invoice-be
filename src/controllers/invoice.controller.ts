@@ -1,17 +1,20 @@
 import type { Request, Response } from "express";
-import { UnauthorizedError } from "../lib/errors.js";
-import { renderInvoicePdf } from "../integrations/pdf/render-invoice-pdf.js";
+import { UnauthorizedError, ValidationError } from "../lib/errors.js";
 import {
   cancelInvoiceAccount,
   createInvoiceAccount,
   deleteInvoiceAccount,
   duplicateInvoiceAccount,
   getInvoiceAccount,
+  getInvoiceShareLink,
+  getInvoiceSummaryCounts,
+  getPublicInvoiceByToken,
   listInvoiceAccounts,
   recordInvoicePayment,
   sendInvoiceAccount,
   updateInvoiceAccount,
 } from "../services/invoice.service.js";
+import { getOrCreateInvoicePdfForAccount } from "../services/invoice-pdf.service.js";
 import { success } from "../utils/api-response.js";
 import { uuidParamSchema } from "../validators/common.validators.js";
 import {
@@ -34,6 +37,12 @@ export async function listInvoicesController(req: Request, res: Response): Promi
   const query = validate(listInvoicesQuerySchema, req.query);
   const result = await listInvoiceAccounts(actor, query);
   res.status(200).json(success(result));
+}
+
+export async function getInvoiceSummaryController(req: Request, res: Response): Promise<void> {
+  const actor = requireActor(req);
+  const summary = await getInvoiceSummaryCounts(actor);
+  res.status(200).json(success({ summary }));
 }
 
 export async function getInvoiceController(req: Request, res: Response): Promise<void> {
@@ -79,6 +88,22 @@ export async function sendInvoiceController(req: Request, res: Response): Promis
   res.status(200).json(success({ invoice }));
 }
 
+export async function shareInvoiceLinkController(req: Request, res: Response): Promise<void> {
+  const actor = requireActor(req);
+  const params = validate(uuidParamSchema, req.params);
+  const result = await getInvoiceShareLink(actor, params.id);
+  res.status(200).json(success(result));
+}
+
+export async function getPublicInvoiceController(req: Request, res: Response): Promise<void> {
+  const token = typeof req.params.token === "string" ? req.params.token.trim() : "";
+  if (!/^[a-zA-Z0-9_-]{20,128}$/.test(token)) {
+    throw new ValidationError("Invalid invoice link");
+  }
+  const invoice = await getPublicInvoiceByToken(token);
+  res.status(200).json(success({ invoice }));
+}
+
 export async function cancelInvoiceController(req: Request, res: Response): Promise<void> {
   const actor = requireActor(req);
   const params = validate(uuidParamSchema, req.params);
@@ -98,7 +123,7 @@ export async function downloadInvoicePdfController(req: Request, res: Response):
   const actor = requireActor(req);
   const params = validate(uuidParamSchema, req.params);
   const invoice = await getInvoiceAccount(actor, params.id);
-  const pdf = await renderInvoicePdf(invoice);
+  const pdf = await getOrCreateInvoicePdfForAccount(actor, params.id);
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader(
     "Content-Disposition",

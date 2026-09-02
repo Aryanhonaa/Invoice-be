@@ -14,19 +14,20 @@ export function toAuthUser(user: UserRecord): AuthUser {
   };
 }
 
-export function toPublicUser(user: UserRecord): PublicUser {
+export function toPublicUser(user: UserRecord, avatarUrl: string | null = null): PublicUser {
   return {
     ...toAuthUser(user),
     phone: user.phone,
+    avatarUrl,
     lastLoginAt: user.lastLoginAt?.toISOString() ?? null,
     createdAt: user.createdAt.toISOString(),
     updatedAt: user.updatedAt.toISOString(),
   };
 }
 
-export function toAdminView(user: AdminRecord): AdminView {
+export function toAdminView(user: AdminRecord, avatarUrl: string | null = null): AdminView {
   return {
-    ...toPublicUser(user),
+    ...toPublicUser(user, avatarUrl),
     organization: user.organization
       ? {
           id: user.organization.id,
@@ -35,5 +36,6 @@ export function toAdminView(user: AdminRecord): AdminView {
           isActive: user.organization.isActive,
         }
       : null,
+    memberCount: user._count?.managedMembers ?? user.managedMembers?.length ?? 0,
   };
 }

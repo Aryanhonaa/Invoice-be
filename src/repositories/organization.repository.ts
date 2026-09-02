@@ -31,13 +31,33 @@ export async function getSoleOrganizationId(): Promise<string | null> {
   return all.length === 1 ? all[0].id : null;
 }
 
+export async function getDefaultOrganizationId(): Promise<string | null> {
+  const sole = await getSoleOrganizationId();
+  if (sole) {
+    return sole;
+  }
+  const firstActive = await prisma.organization.findFirst({
+    where: { isActive: true },
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+  if (firstActive) {
+    return firstActive.id;
+  }
+  const first = await prisma.organization.findFirst({
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+  return first?.id ?? null;
+}
+
 export async function listOrganizationOverviews(): Promise<OrganizationOverviewRecord[]> {
   const organizations = await prisma.organization.findMany({
     orderBy: { name: "asc" },
     include: {
       _count: {
         select: {
-          teams: true,
+          users: true,
           customers: true,
           invoices: true,
         },
@@ -68,7 +88,7 @@ export async function findOrganizationOverviewById(
     include: {
       _count: {
         select: {
-          teams: true,
+          users: true,
           customers: true,
           invoices: true,
         },
@@ -106,7 +126,6 @@ export interface OrganizationOverviewRecord {
   } | null;
   adminCount: number;
   memberCount: number;
-  teamCount: number;
   customerCount: number;
   invoiceCount: number;
 }
@@ -118,7 +137,7 @@ function toOverviewRecord(organization: {
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
-  _count: { teams: number; customers: number; invoices: number };
+  _count: { users: number; customers: number; invoices: number };
   users: Array<{
     id: string;
     firstName: string;
@@ -147,7 +166,6 @@ function toOverviewRecord(organization: {
       : null,
     adminCount: admins.length,
     memberCount: organization.users.filter((user) => user.role === "MEMBER").length,
-    teamCount: organization._count.teams,
     customerCount: organization._count.customers,
     invoiceCount: organization._count.invoices,
   };
@@ -179,7 +197,7 @@ export async function createOrganization(data: {
 
 export async function updateOrganization(
   id: string,
-  data: Partial<Pick<OrganizationRecord, "name" | "slug" | "isActive">>,
+  data: Partial<Pick<OrganizationRecord, "name" | "slug" | "isActive" | "logoObjectKey">>,
 ): Promise<OrganizationRecord> {
   return prisma.organization.update({
     where: { id },

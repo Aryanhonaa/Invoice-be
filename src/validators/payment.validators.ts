@@ -27,7 +27,6 @@ export const listPaymentsQuerySchema = z.object({
   customerId: z.string().uuid().optional(),
   invoiceId: z.string().uuid().optional(),
   organizationId: z.string().uuid().optional(),
-  teamId: z.string().uuid().optional(),
   dateFrom: z.string().optional(),
   dateTo: z.string().optional(),
   page: z.coerce.number().int().min(1).default(1),

@@ -1,11 +1,11 @@
 import type { AccountStatus } from "@prisma/client";
 import { ConflictError, ForbiddenError, NotFoundError } from "../lib/errors.js";
+import { assertAdministratorOwnsMember } from "../lib/admin-scope.js";
 import { toMemberView } from "../lib/member-view.js";
 import { hashPassword } from "../lib/password.js";
 import { createInvitationToken, generateTemporaryPassword } from "../lib/temporary-credentials.js";
 import { findOrganizationById } from "../repositories/organization.repository.js";
 import { deleteSessionsByUserId } from "../repositories/session.repository.js";
-import { addTeamMember, findTeamById, listTeamsForUser } from "../repositories/team.repository.js";
 import {
   createUser,
   findMemberById,
@@ -18,11 +18,14 @@ import {
   resolveManagedOrganizationId,
   scopedOrganizationFilter,
 } from "../utils/organization-scope.js";
-import { resolveTeamScope } from "../utils/team-scope.js";
 import { recordAudit } from "./audit.service.js";
 
-function canManageMembers(actor: AuthUser): boolean {
+function canViewMembers(actor: AuthUser): boolean {
   return actor.role === "SUPER_ADMIN" || actor.role === "ADMIN";
+}
+
+function canCreateMembers(actor: AuthUser): boolean {
+  return actor.role === "ADMIN";
 }
 
 export async function listMemberAccounts(
@@ -31,42 +34,27 @@ export async function listMemberAccounts(
     search?: string;
     status?: AccountStatus;
     organizationId?: string;
-    teamId?: string;
+    administratorId?: string;
     page: number;
     pageSize: number;
   },
 ): Promise<{ items: MemberView[]; page: number; pageSize: number; total: number; totalPages: number }> {
-  if (!canManageMembers(actor)) {
+  if (!canViewMembers(actor)) {
     throw new ForbiddenError("You cannot view members");
   }
 
   const organizationId = scopedOrganizationFilter(actor, query.organizationId);
-  let requestedTeamId = query.teamId;
-  if (!requestedTeamId && actor.role === "ADMIN") {
-    const actorTeams = await listTeamsForUser(actor.id);
-    if (actorTeams.length === 1) {
-      requestedTeamId = actorTeams[0].id;
-    }
-  }
-  const { teamId } = await resolveTeamScope(actor, {
-    organizationId,
-    teamId: requestedTeamId,
-  });
+  const administratorId =
+    actor.role === "ADMIN" ? actor.id : query.administratorId;
 
   const { items, total } = await listMembers({
     ...query,
     organizationId,
-    teamId: teamId ?? undefined,
+    administratorId,
   });
 
   return {
-    items: items.map((member) =>
-      toMemberView(
-        member,
-        member.organization,
-        member.teamMemberships.map((membership) => membership.team),
-      ),
-    ),
+    items: items.map((member) => toMemberView(member, member.organization, member.administrator)),
     page: query.page,
     pageSize: query.pageSize,
     total,
@@ -75,7 +63,7 @@ export async function listMemberAccounts(
 }
 
 export async function getMemberAccount(actor: AuthUser, id: string): Promise<MemberView> {
-  if (!canManageMembers(actor)) {
+  if (!canViewMembers(actor)) {
     throw new ForbiddenError("You cannot view members");
   }
 
@@ -84,15 +72,9 @@ export async function getMemberAccount(actor: AuthUser, id: string): Promise<Mem
     throw new NotFoundError("Member not found");
   }
 
-  if (actor.role === "ADMIN" && member.organizationId !== actor.organizationId) {
-    throw new ForbiddenError("You do not have access to this organization");
-  }
+  assertAdministratorOwnsMember(actor, member);
 
-  return toMemberView(
-    member,
-    member.organization,
-    member.teamMemberships.map((membership) => membership.team),
-  );
+  return toMemberView(member, member.organization, member.administrator);
 }
 
 export async function createMember(
@@ -101,9 +83,7 @@ export async function createMember(
     email: string;
     firstName: string;
     lastName: string;
-    phone?: string;
     organizationId?: string;
-    teamIds?: string[];
     temporaryPassword?: string;
     password?: string;
     status?: AccountStatus;
@@ -114,7 +94,7 @@ export async function createMember(
     throw new ForbiddenError("Role cannot be assigned through this endpoint");
   }
 
-  if (!canManageMembers(actor)) {
+  if (!canCreateMembers(actor)) {
     throw new ForbiddenError("You cannot create members");
   }
 
@@ -148,34 +128,10 @@ export async function createMember(
     role: "MEMBER",
     status: input.status ?? "ACTIVE",
     organizationId,
+    administratorId: actor.id,
     passwordResetToken: invitation.tokenHash,
     passwordResetExpires: invitation.expiresAt,
   });
-
-  let teamIds = input.teamIds ?? [];
-  if (teamIds.length === 0 && actor.role === "ADMIN") {
-    const actorTeams = await listTeamsForUser(actor.id);
-    teamIds = actorTeams.filter((team) => team.isActive).map((team) => team.id);
-  }
-
-  for (const teamId of teamIds) {
-    const team = await findTeamById(teamId);
-    if (!team || team.organizationId !== organizationId) {
-      throw new ForbiddenError("You cannot assign a member to an unauthorized team");
-    }
-    if (!team.isActive) {
-      throw new ForbiddenError("You cannot assign a member to an inactive team");
-    }
-    await addTeamMember(team.id, created.id);
-    await recordAudit({
-      actorId: actor.id,
-      action: "MEMBER_ADDED_TO_TEAM",
-      entity: "TeamMember",
-      entityId: created.id,
-      organizationId,
-      metadata: { teamId: team.id, memberId: created.id },
-    });
-  }
 
   await recordAudit({
     actorId: actor.id,
@@ -183,7 +139,7 @@ export async function createMember(
     entity: "User",
     entityId: created.id,
     organizationId,
-    metadata: { email: created.email },
+    metadata: { email: created.email, administratorId: actor.id },
   });
 
   const member = await findMemberById(created.id);
@@ -192,12 +148,8 @@ export async function createMember(
   }
 
   return {
-    user: toMemberView(
-      member,
-      member.organization,
-      member.teamMemberships.map((membership) => membership.team),
-    ),
-    temporaryPassword: generatedPassword,
+    user: toMemberView(member, member.organization, member.administrator),
+    temporaryPassword: providedPassword ?? generatedPassword,
     invitationToken: invitation.token,
   };
 }
@@ -209,15 +161,16 @@ export async function updateMember(
     firstName?: string;
     lastName?: string;
     email?: string;
-    phone?: string | null;
+    temporaryPassword?: string;
+    password?: string;
     role?: unknown;
   },
-): Promise<MemberView> {
+): Promise<{ user: MemberView; temporaryPassword: string | null }> {
   if (input.role !== undefined) {
     throw new ForbiddenError("Role cannot be changed through this endpoint");
   }
 
-  if (!canManageMembers(actor)) {
+  if (!canViewMembers(actor)) {
     throw new ForbiddenError("You cannot update members");
   }
 
@@ -226,9 +179,7 @@ export async function updateMember(
     throw new NotFoundError("Member not found");
   }
 
-  if (actor.role === "ADMIN" && member.organizationId !== actor.organizationId) {
-    throw new ForbiddenError("You do not have access to this organization");
-  }
+  assertAdministratorOwnsMember(actor, member);
 
   if (input.email) {
     const email = input.email.toLowerCase();
@@ -238,12 +189,18 @@ export async function updateMember(
     }
   }
 
+  const nextPassword = input.temporaryPassword ?? input.password;
+
   await updateUser(member.id, {
     firstName: input.firstName,
     lastName: input.lastName,
     email: input.email,
-    phone: input.phone,
+    ...(nextPassword ? { passwordHash: await hashPassword(nextPassword) } : {}),
   });
+
+  if (nextPassword) {
+    await deleteSessionsByUserId(member.id);
+  }
 
   const updated = await findMemberById(member.id);
   if (!updated) {
@@ -259,19 +216,17 @@ export async function updateMember(
     metadata: { email: updated.email },
   });
 
-  return toMemberView(
-    updated,
-    updated.organization,
-    updated.teamMemberships.map((membership) => membership.team),
-  );
+  return {
+    user: toMemberView(updated, updated.organization, updated.administrator),
+    temporaryPassword: nextPassword ?? null,
+  };
 }
 
-export async function updateMemberStatus(
+export async function resetMemberPassword(
   actor: AuthUser,
   memberId: string,
-  status: AccountStatus,
-): Promise<MemberView> {
-  if (!canManageMembers(actor)) {
+): Promise<{ temporaryPassword: string }> {
+  if (!canViewMembers(actor)) {
     throw new ForbiddenError("You cannot update members");
   }
 
@@ -280,9 +235,39 @@ export async function updateMemberStatus(
     throw new NotFoundError("Member not found");
   }
 
-  if (actor.role === "ADMIN" && member.organizationId !== actor.organizationId) {
-    throw new ForbiddenError("You do not have access to this organization");
+  assertAdministratorOwnsMember(actor, member);
+
+  const temporaryPassword = generateTemporaryPassword();
+  await updateUser(member.id, { passwordHash: await hashPassword(temporaryPassword) });
+  await deleteSessionsByUserId(member.id);
+
+  await recordAudit({
+    actorId: actor.id,
+    action: "MEMBER_PASSWORD_RESET",
+    entity: "User",
+    entityId: member.id,
+    organizationId: member.organizationId,
+    metadata: { email: member.email },
+  });
+
+  return { temporaryPassword };
+}
+
+export async function updateMemberStatus(
+  actor: AuthUser,
+  memberId: string,
+  status: AccountStatus,
+): Promise<MemberView> {
+  if (!canViewMembers(actor)) {
+    throw new ForbiddenError("You cannot update members");
   }
+
+  const member = await findMemberById(memberId);
+  if (!member) {
+    throw new NotFoundError("Member not found");
+  }
+
+  assertAdministratorOwnsMember(actor, member);
 
   await updateUser(member.id, { status });
 
@@ -304,9 +289,5 @@ export async function updateMemberStatus(
     metadata: { email: updated.email, status },
   });
 
-  return toMemberView(
-    updated,
-    updated.organization,
-    updated.teamMemberships.map((membership) => membership.team),
-  );
+  return toMemberView(updated, updated.organization, updated.administrator);
 }

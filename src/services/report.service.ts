@@ -1,11 +1,66 @@
+import {
+  assertAdministratorOwnsMember,
+  resolveAdministratorId,
+  resolveInvoiceUserScope,
+} from "../lib/admin-scope.js";
 import { resolveDateRange, type DatePreset } from "../lib/date-range.js";
+import { ForbiddenError, NotFoundError } from "../lib/errors.js";
 import { getSoleOrganizationId, listOrganizations } from "../repositories/organization.repository.js";
 import { loadReport } from "../repositories/report.repository.js";
-import { listTeamsForUser } from "../repositories/team.repository.js";
+import { findMemberById } from "../repositories/user.repository.js";
 import type { AuthUser } from "../types/auth.js";
 import type { ReportKind, ReportView } from "../types/report.js";
 import { scopedOrganizationFilter } from "../utils/organization-scope.js";
-import { resolveTeamScope } from "../utils/team-scope.js";
+
+async function resolveReportAccess(
+  actor: AuthUser,
+  memberId?: string,
+): Promise<{
+  userIds?: string[];
+  administratorId?: string;
+  expenseCreatedById?: string;
+  memberId: string | null;
+}> {
+  if (actor.role === "MEMBER") {
+    return {
+      userIds: [actor.id],
+      administratorId: (await resolveAdministratorId(actor)) ?? undefined,
+      expenseCreatedById: actor.id,
+      memberId: actor.id,
+    };
+  }
+
+  if (memberId) {
+    if (actor.role !== "ADMIN" && actor.role !== "SUPER_ADMIN") {
+      throw new ForbiddenError("You cannot filter reports by member");
+    }
+
+    const member = await findMemberById(memberId);
+    if (!member) {
+      throw new NotFoundError("Member not found");
+    }
+
+    assertAdministratorOwnsMember(actor, member);
+
+    return {
+      userIds: [member.id],
+      administratorId:
+        actor.role === "ADMIN" ? actor.id : (member.administratorId ?? undefined),
+      expenseCreatedById: member.id,
+      memberId: member.id,
+    };
+  }
+
+  const userScope = await resolveInvoiceUserScope(actor);
+  const administratorId = await resolveAdministratorId(actor);
+
+  return {
+    userIds: userScope?.userIds,
+    administratorId: administratorId ?? undefined,
+    expenseCreatedById: undefined,
+    memberId: null,
+  };
+}
 
 export async function getReport(
   actor: AuthUser,
@@ -15,25 +70,18 @@ export async function getReport(
     dateFrom?: string;
     dateTo?: string;
     organizationId?: string;
-    teamId?: string;
+    memberId?: string;
     page: number;
     pageSize: number;
     csv?: boolean;
   },
-): Promise<ReportView> {
+): Promise<ReportView & { memberId: string | null }> {
   const organizationId =
     actor.role === "SUPER_ADMIN"
       ? (query.organizationId ?? (await getSoleOrganizationId()) ?? undefined)
       : scopedOrganizationFilter(actor, query.organizationId);
-  const { teamId } =
-    actor.role === "SUPER_ADMIN"
-      ? { teamId: null }
-      : await resolveTeamScope(actor, {
-          organizationId,
-          teamId: query.teamId,
-        });
   const range = resolveDateRange(query.preset, query.dateFrom, query.dateTo);
-  const teams = actor.role === "MEMBER" ? await listTeamsForUser(actor.id) : [];
+  const access = await resolveReportAccess(actor, query.memberId);
 
   const loaded = await loadReport({
     kind: query.kind,
@@ -41,11 +89,9 @@ export async function getReport(
     range,
     scope: {
       organizationId,
-      assignedTeamId: teamId ?? undefined,
-      createdById: actor.role === "MEMBER" && !teamId ? actor.id : undefined,
-      assignedMemberId: actor.role === "MEMBER" && !teamId ? actor.id : undefined,
-      assignedTeamIds: actor.role === "MEMBER" && !teamId ? teams.map((team) => team.id) : undefined,
-      expenseCreatedById: actor.role === "MEMBER" ? actor.id : undefined,
+      userIds: access.userIds,
+      administratorId: access.administratorId,
+      expenseCreatedById: access.expenseCreatedById,
     },
     page: query.page,
     pageSize: query.pageSize,
@@ -65,9 +111,16 @@ export async function getReport(
   return {
     ...loaded,
     role: actor.role,
-    scope: actor.role === "MEMBER" ? "MEMBER" : isSystem ? "SYSTEM" : "ORGANIZATION",
+    scope:
+      actor.role === "MEMBER"
+        ? "MEMBER"
+        : actor.role === "ADMIN"
+          ? "ADMIN"
+          : isSystem
+            ? "SYSTEM"
+            : "ORGANIZATION",
     organizationId: organizationId ?? null,
-    teamId,
+    memberId: access.memberId,
     organizations,
     overview: loaded.overview,
     series: loaded.series,

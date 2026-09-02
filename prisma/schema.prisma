@@ -32,6 +32,12 @@ enum InvoiceStatus {
   CANCELLED
 }
 
+enum InvoiceEmailStatus {
+  NOT_SENT
+  SENT
+  FAILED
+}
+
 enum QuoteStatus {
   DRAFT
   SENT
@@ -73,15 +79,15 @@ enum CatalogKind {
 // ---------------------------------------------------------------------------
 
 model Organization {
-  id        String   @id @default(uuid())
-  name      String
-  slug      String   @unique
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String   @id @default(uuid())
+  name          String
+  slug          String   @unique
+  logoObjectKey String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   users              User[]
-  teams              Team[]
   customers          Customer[]
   products           Product[]
   services           Service[]
@@ -108,9 +114,11 @@ model User {
   firstName            String
   lastName             String
   phone                String?
+  avatarObjectKey      String?
   role                 UserRole
   status               AccountStatus @default(ACTIVE)
   organizationId       String?
+  administratorId      String?
   lastLoginAt          DateTime?
   passwordResetToken   String?       @unique
   passwordResetExpires DateTime?
@@ -118,7 +126,9 @@ model User {
   updatedAt            DateTime      @updatedAt
 
   organization       Organization?   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  teamMemberships    TeamMember[]
+  administrator      User?           @relation("AdministratorMembers", fields: [administratorId], references: [id], onDelete: Restrict)
+  managedMembers     User[]          @relation("AdministratorMembers")
+  managedCustomers   Customer[]      @relation("AdministratorCustomers")
   sessions           Session[]
   createdInvoices    Invoice[]       @relation("InvoiceCreatedBy")
   assignedInvoices   Invoice[]       @relation("InvoiceAssignedTo")
@@ -130,6 +140,7 @@ model User {
   auditLogs          AuditLog[]      @relation("AuditActor")
 
   @@index([organizationId])
+  @@index([administratorId])
   @@index([role])
   @@index([status])
   @@map("users")
@@ -226,40 +237,6 @@ model RolePermission {
   @@map("role_permissions")
 }
 
-model Team {
-  id             String        @id @default(uuid())
-  organizationId String
-  name           String
-  description    String?
-  isActive       Boolean       @default(true)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  members      TeamMember[]
-  assignedInvoices Invoice[]
-
-  @@unique([organizationId, name])
-  @@index([organizationId])
-  @@index([isActive])
-  @@map("teams")
-}
-
-model TeamMember {
-  id        String   @id @default(uuid())
-  teamId    String
-  userId    String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([teamId, userId])
-  @@index([userId])
-  @@map("team_members")
-}
-
 // ---------------------------------------------------------------------------
 // Catalog and customers
 // ---------------------------------------------------------------------------
@@ -267,6 +244,7 @@ model TeamMember {
 model Customer {
   id                String   @id @default(uuid())
   organizationId    String
+  administratorId   String?
   name              String
   company           String?
   email             String?
@@ -280,6 +258,7 @@ model Customer {
   updatedAt         DateTime @updatedAt
 
   organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  administrator   User?        @relation("AdministratorCustomers", fields: [administratorId], references: [id], onDelete: SetNull)
   billingAddress  Address?     @relation("CustomerBillingAddress", fields: [billingAddressId], references: [id], onDelete: SetNull)
   shippingAddress Address?     @relation("CustomerShippingAddress", fields: [shippingAddressId], references: [id], onDelete: SetNull)
   invoices        Invoice[]
@@ -287,6 +266,7 @@ model Customer {
   payments        Payment[]
 
   @@index([organizationId])
+  @@index([administratorId])
   @@index([organizationId, email])
   @@index([isActive])
   @@index([billingAddressId])
@@ -373,7 +353,6 @@ model Invoice {
   organizationId    String
   customerId        String
   createdById       String
-  assignedTeamId    String?
   assignedMemberId  String?
   invoiceNumber     String
   status            InvoiceStatus @default(DRAFT)
@@ -389,6 +368,11 @@ model Invoice {
   terms             String?
   billingAddressId  String?
   shippingAddressId String?
+  shareToken        String?             @unique
+  pdfObjectKey      String?
+  emailStatus       InvoiceEmailStatus  @default(NOT_SENT)
+  emailSentAt       DateTime?
+  emailLastError    String?
   sentAt            DateTime?
   viewedAt          DateTime?
   createdAt         DateTime      @default(now())
@@ -397,7 +381,6 @@ model Invoice {
   organization    Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   customer        Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
   createdBy       User          @relation("InvoiceCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
-  assignedTeam    Team?         @relation(fields: [assignedTeamId], references: [id], onDelete: SetNull)
   assignedMember  User?         @relation("InvoiceAssignedTo", fields: [assignedMemberId], references: [id], onDelete: SetNull)
   billingAddress  Address?      @relation("InvoiceBillingAddress", fields: [billingAddressId], references: [id], onDelete: SetNull)
   shippingAddress Address?      @relation("InvoiceShippingAddress", fields: [shippingAddressId], references: [id], onDelete: SetNull)
@@ -408,7 +391,6 @@ model Invoice {
   @@index([organizationId])
   @@index([customerId])
   @@index([createdById])
-  @@index([assignedTeamId])
   @@index([assignedMemberId])
   @@index([status])
   @@index([dueDate])

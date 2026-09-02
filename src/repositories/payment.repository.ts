@@ -1,3 +1,4 @@
+import { buildInvoiceUserAccessFilter } from "../lib/admin-scope.js";
 import type { InvoiceStatus, PaymentMethod, PaymentProvider, PaymentStatus, Prisma } from "@prisma/client";
 import { NotFoundError, ValidationError } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
@@ -31,37 +32,22 @@ export async function listPayments(query: {
   invoiceId?: string;
   organizationId?: string;
   invoiceIds?: string[];
-  assignedTeamId?: string;
-  invoiceAccess?: {
-    createdById: string;
-    assignedMemberId: string;
-    assignedTeamIds: string[];
-  };
+  userIds?: string[];
   dateFrom?: Date;
   dateTo?: Date;
   page: number;
   pageSize: number;
 }): Promise<{ items: PaymentRecord[]; total: number }> {
-  const invoiceAccessFilter = query.invoiceAccess
-    ? {
-        invoice: {
-          OR: [
-            { createdById: query.invoiceAccess.createdById },
-            { assignedMemberId: query.invoiceAccess.assignedMemberId },
-            query.invoiceAccess.assignedTeamIds.length > 0
-              ? { assignedTeamId: { in: query.invoiceAccess.assignedTeamIds } }
-              : undefined,
-          ].filter(Boolean) as Prisma.InvoiceWhereInput[],
-        },
-      }
-    : {};
+  const invoiceAccessFilter =
+    query.userIds && query.userIds.length > 0
+      ? { invoice: buildInvoiceUserAccessFilter(query.userIds) }
+      : {};
 
   const where: Prisma.PaymentWhereInput = {
     ...(query.organizationId ? { organizationId: query.organizationId } : {}),
     ...(query.customerId ? { customerId: query.customerId } : {}),
     ...(query.invoiceId ? { invoiceId: query.invoiceId } : {}),
     ...(query.invoiceIds ? { invoiceId: { in: query.invoiceIds } } : {}),
-    ...(query.assignedTeamId ? { invoice: { assignedTeamId: query.assignedTeamId } } : {}),
     ...invoiceAccessFilter,
     ...(query.status ? { status: query.status } : {}),
     ...(query.provider ? { provider: query.provider } : {}),

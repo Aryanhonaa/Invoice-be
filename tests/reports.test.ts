@@ -52,6 +52,13 @@ vi.mock("../src/repositories/audit.repository.js", async () => {
 vi.mock("../src/repositories/health.repository.js", () => ({
   checkDatabaseConnection: vi.fn().mockResolvedValue(true),
 }));
+vi.mock("../src/integrations/email/provider.js", () => ({
+  getEmailProvider: () => ({
+    name: "test",
+    isConfigured: () => true,
+    sendInvoiceEmail: async () => ({ sent: true, provider: "test" }),
+  }),
+}));
 
 import { app } from "../src/app.js";
 import { hashPassword } from "../src/lib/password.js";
@@ -84,11 +91,10 @@ describe("reports", () => {
     const db = getTestDb();
     const orgA = seedOrganization(db, { name: "Org A", slug: "org-a" });
     const orgB = seedOrganization(db, { name: "Org B", slug: "org-b" });
-    const teamA = seedTeam(db, { organizationId: orgA.id, name: "Sales" });
     const passwordHash = await hashPassword(password);
 
     seedUser(db, { email: "super@example.com", passwordHash, role: "SUPER_ADMIN" });
-    seedUser(db, {
+    const adminA = seedUser(db, {
       email: "admin-a@example.com",
       passwordHash,
       role: "ADMIN",
@@ -100,6 +106,7 @@ describe("reports", () => {
       role: "ADMIN",
       organizationId: orgB.id,
     });
+    const teamA = seedTeam(db, { organizationId: orgA.id, name: "Sales", createdById: adminA.id });
     const memberA = seedUser(db, {
       email: "member-a@example.com",
       passwordHash,
@@ -107,6 +114,7 @@ describe("reports", () => {
       organizationId: orgA.id,
     });
     db.teamMembers.push({ teamId: teamA.id, userId: memberA.id });
+    db.teamMembers.push({ teamId: teamA.id, userId: adminA.id });
     seedUser(db, {
       email: "member-b@example.com",
       passwordHash,
@@ -121,11 +129,11 @@ describe("reports", () => {
     const customerA = await request(app)
       .post("/api/customers")
       .set("Cookie", operatorA)
-      .send({ name: "Acme Buyer" });
+      .send({ name: "Acme Buyer", email: "acme@example.com" });
     const customerB = await request(app)
       .post("/api/customers")
       .set("Cookie", operatorB)
-      .send({ name: "Beta Buyer" });
+      .send({ name: "Beta Buyer", email: "beta@example.com" });
 
     const invoiceA = await request(app)
       .post("/api/invoices")
@@ -197,26 +205,26 @@ describe("reports", () => {
       .set("Cookie", superCookies);
     expect(year.status).toBe(200);
     expect(year.body.data.report.scope).toBe("SYSTEM");
-    expect(year.body.data.report.overview.revenue).toBe("0.0000");
-    expect(year.body.data.report.overview.taxCollected).toBe("0.0000");
+    expect(year.body.data.report.overview.revenue).toBe("340.0000");
+    expect(year.body.data.report.overview.taxCollected).toBe("10.0000");
 
     const month = await request(app)
       .get("/api/reports/revenue?preset=this_month")
       .set("Cookie", superCookies);
-    expect(month.body.data.report.overview.revenue).toBe("0.0000");
+    expect(month.body.data.report.overview.revenue).toBe("340.0000");
 
     const lastMonth = await request(app)
       .get("/api/reports/paid?preset=last_month")
       .set("Cookie", superCookies);
-    expect(lastMonth.body.data.report.overview.invoices).toBe(0);
+    expect(lastMonth.body.data.report.overview.invoices).toBe(2);
 
     const scoped = await request(app)
       .get(`/api/reports/revenue?preset=this_year&organizationId=${orgA.id}`)
       .set("Cookie", superCookies);
     expect(scoped.body.data.report.scope).toBe("SYSTEM");
-    expect(scoped.body.data.report.organizationId).toBeNull();
-    expect(scoped.body.data.report.overview.revenue).toBe("0.0000");
-    expect(scoped.body.data.report.overview.expenses).toBe("0.0000");
+    expect(scoped.body.data.report.organizationId).toBe(orgA.id);
+    expect(scoped.body.data.report.overview.revenue).toBe("40.0000");
+    expect(scoped.body.data.report.overview.expenses).toBe("25.0000");
   });
 
   it("keeps Admin reports isolated by organization", async () => {

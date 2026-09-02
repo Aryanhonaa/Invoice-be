@@ -53,39 +53,17 @@ async function seed(): Promise<void> {
     });
   }
 
-  const team = await prisma.team.upsert({
-    where: {
-      organizationId_name: {
-        organizationId: organization.id,
-        name: "Sales",
-      },
-    },
-    update: { isActive: true },
-    create: {
-      organizationId: organization.id,
-      name: "Sales",
-      description: "Demo sales team",
-    },
-  });
-
-  const members = await prisma.user.findMany({
-    where: { email: { in: ["admin@outinvoice.local", "member@outinvoice.local", "member2@outinvoice.local"] } },
+  const admin = await prisma.user.findUnique({
+    where: { email: "admin@outinvoice.local" },
     select: { id: true },
   });
 
-  for (const member of members) {
-    await prisma.teamMember.upsert({
+  if (admin) {
+    await prisma.user.updateMany({
       where: {
-        teamId_userId: {
-          teamId: team.id,
-          userId: member.id,
-        },
+        email: { in: ["member@outinvoice.local", "member2@outinvoice.local"] },
       },
-      update: {},
-      create: {
-        teamId: team.id,
-        userId: member.id,
-      },
+      data: { administratorId: admin.id },
     });
   }
 

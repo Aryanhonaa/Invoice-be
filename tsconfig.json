@@ -4,6 +4,7 @@
     "lib": ["ES2022"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "jsx": "react-jsx",
     "rootDir": ".",
     "outDir": "dist",
     "strict": true,
@@ -19,6 +20,6 @@
     "exactOptionalPropertyTypes": false,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "prisma/seed.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "prisma/seed.ts"],
   "exclude": ["node_modules", "dist"]
 }

@@ -1,4 +1,5 @@
-import type { CatalogKind, InvoiceStatus, Prisma } from "@prisma/client";
+import type { CatalogKind, InvoiceEmailStatus, InvoiceStatus, Prisma } from "@prisma/client";
+import { buildInvoiceUserAccessFilter } from "../lib/admin-scope.js";
 import { startOfUtcDay } from "../lib/date-range.js";
 import { prisma } from "../lib/prisma.js";
 import type { InvoiceRecord } from "../lib/invoice-view.js";
@@ -20,7 +21,6 @@ const invoiceInclude = {
   organization: true,
   customer: true,
   createdBy: true,
-  assignedTeam: true,
   assignedMember: true,
   billingAddress: true,
   shippingAddress: true,
@@ -49,6 +49,13 @@ function addressData(input: AddressInput) {
 export async function findInvoiceById(id: string): Promise<InvoiceRecord | null> {
   return prisma.invoice.findUnique({
     where: { id },
+    include: invoiceDetailInclude,
+  });
+}
+
+export async function findInvoiceByShareToken(token: string): Promise<InvoiceRecord | null> {
+  return prisma.invoice.findUnique({
+    where: { shareToken: token },
     include: invoiceDetailInclude,
   });
 }
@@ -95,10 +102,7 @@ export async function listInvoices(query: {
   overdue?: boolean;
   customerId?: string;
   organizationId?: string;
-  createdById?: string;
-  assignedMemberId?: string;
-  assignedTeamIds?: string[];
-  assignedTeamId?: string;
+  userIds?: string[];
   dateFrom?: Date;
   dateTo?: Date;
   sort?: "invoiceDate" | "dueDate" | "total" | "invoiceNumber" | "createdAt";
@@ -108,21 +112,12 @@ export async function listInvoices(query: {
   now?: Date;
 }): Promise<{ items: InvoiceRecord[]; total: number }> {
   const accessFilter: Prisma.InvoiceWhereInput | undefined =
-    query.createdById || query.assignedMemberId || query.assignedTeamIds
-      ? {
-          OR: [
-            query.createdById ? { createdById: query.createdById } : undefined,
-            query.assignedMemberId ? { assignedMemberId: query.assignedMemberId } : undefined,
-            query.assignedTeamIds && query.assignedTeamIds.length > 0
-              ? { assignedTeamId: { in: query.assignedTeamIds } }
-              : undefined,
-          ].filter(Boolean) as Prisma.InvoiceWhereInput[],
-        }
+    query.userIds && query.userIds.length > 0
+      ? buildInvoiceUserAccessFilter(query.userIds)
       : undefined;
 
   const where: Prisma.InvoiceWhereInput = {
     ...(query.organizationId ? { organizationId: query.organizationId } : {}),
-    ...(query.assignedTeamId ? { assignedTeamId: query.assignedTeamId } : {}),
     ...(query.customerId ? { customerId: query.customerId } : {}),
     ...(query.dateFrom || query.dateTo
       ? {
@@ -173,7 +168,6 @@ export async function createInvoice(data: {
   organizationId: string;
   customerId: string;
   createdById: string;
-  assignedTeamId?: string | null;
   assignedMemberId?: string | null;
   invoiceNumber: string;
   invoiceDate: Date;
@@ -215,7 +209,6 @@ export async function createInvoice(data: {
         organizationId: data.organizationId,
         customerId: data.customerId,
         createdById: data.createdById,
-        assignedTeamId: data.assignedTeamId ?? null,
         assignedMemberId: data.assignedMemberId ?? null,
         invoiceNumber: data.invoiceNumber,
         invoiceDate: data.invoiceDate,
@@ -255,7 +248,6 @@ export async function updateInvoice(
   id: string,
   data: {
     customerId?: string;
-    assignedTeamId?: string | null;
     assignedMemberId?: string | null;
     invoiceNumber?: string;
     invoiceDate?: Date;
@@ -269,6 +261,11 @@ export async function updateInvoice(
     notes?: string | null;
     terms?: string | null;
     status?: InvoiceStatus;
+    shareToken?: string | null;
+    pdfObjectKey?: string | null;
+    emailStatus?: InvoiceEmailStatus;
+    emailSentAt?: Date | null;
+    emailLastError?: string | null;
     sentAt?: Date | null;
     viewedAt?: Date | null;
     billingAddress?: AddressInput | null;
@@ -313,7 +310,6 @@ export async function updateInvoice(
       where: { id },
       data: {
         customerId: data.customerId,
-        assignedTeamId: data.assignedTeamId,
         assignedMemberId: data.assignedMemberId,
         invoiceNumber: data.invoiceNumber,
         invoiceDate: data.invoiceDate,
@@ -327,6 +323,11 @@ export async function updateInvoice(
         notes: data.notes,
         terms: data.terms,
         status: data.status,
+        shareToken: data.shareToken,
+        pdfObjectKey: data.pdfObjectKey,
+        emailStatus: data.emailStatus,
+        emailSentAt: data.emailSentAt,
+        emailLastError: data.emailLastError,
         sentAt: data.sentAt,
         viewedAt: data.viewedAt,
         billingAddressId,
@@ -361,6 +362,71 @@ export async function updateInvoice(
 
 export async function deleteInvoice(id: string): Promise<void> {
   await prisma.invoice.delete({ where: { id } });
+}
+
+export interface InvoiceSummaryCounts {
+  all: number;
+  paid: number;
+  outstanding: number;
+  overview: number;
+  void: number;
+}
+
+/**
+ * Counts invoices for summary cards.
+ * When createdById is set, only invoices created by that user are included.
+ */
+export async function countInvoiceSummary(query: {
+  organizationId?: string;
+  createdById?: string;
+  userIds?: string[];
+  now?: Date;
+}): Promise<InvoiceSummaryCounts> {
+  const accessFilter: Prisma.InvoiceWhereInput | undefined = query.createdById
+    ? { createdById: query.createdById }
+    : query.userIds && query.userIds.length > 0
+      ? buildInvoiceUserAccessFilter(query.userIds)
+      : undefined;
+
+  const base: Prisma.InvoiceWhereInput = {
+    ...(query.organizationId ? { organizationId: query.organizationId } : {}),
+    ...(accessFilter ?? {}),
+  };
+
+  const today = startOfUtcDay(query.now ?? new Date());
+
+  const [all, paid, voidCount, outstanding, overview] = await prisma.$transaction([
+    prisma.invoice.count({ where: base }),
+    prisma.invoice.count({ where: { ...base, status: "PAID" } }),
+    prisma.invoice.count({ where: { ...base, status: "CANCELLED" } }),
+    prisma.invoice.count({
+      where: {
+        ...base,
+        status: { in: ["SENT", "VIEWED", "OVERDUE", "PARTIALLY_PAID"] },
+      },
+    }),
+    // Overview: drafts to finish/send + overdue invoices needing attention
+    prisma.invoice.count({
+      where: {
+        ...base,
+        OR: [
+          { status: "DRAFT" },
+          {
+            status: { in: ["SENT", "VIEWED", "OVERDUE"] },
+            dueDate: { lt: today },
+          },
+        ],
+      },
+    }),
+  ]);
+
+  return {
+    all,
+    paid,
+    outstanding,
+    overview,
+    void: voidCount,
+  };
 }
 
 async function replaceAddress(

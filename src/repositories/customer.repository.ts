@@ -1,17 +1,25 @@
 import type { Address, Customer, Organization, Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
-import type { AddressInput } from "../types/auth.js";
+import type { AddressInput, CustomerUnsentInvoiceSummary } from "../types/auth.js";
 
 export type CustomerRecord = Customer & {
   billingAddress: Address | null;
   shippingAddress: Address | null;
   organization: Organization | null;
+  _count: { invoices: number };
 };
 
 const customerInclude = {
   billingAddress: true,
   shippingAddress: true,
   organization: true,
+  _count: {
+    select: {
+      invoices: {
+        where: { emailStatus: "SENT" },
+      },
+    },
+  },
 } as const;
 
 function addressData(input: AddressInput) {
@@ -22,6 +30,36 @@ function addressData(input: AddressInput) {
     region: input.region ?? null,
     postalCode: input.postalCode ?? null,
     country: input.country,
+  };
+}
+
+function buildCustomerWhere(query: {
+  search?: string;
+  isActive?: boolean;
+  organizationId?: string;
+  administratorId?: string;
+  invoiceLifecycle?: "NEW" | "OLD";
+}): Prisma.CustomerWhereInput {
+  return {
+    ...(query.organizationId ? { organizationId: query.organizationId } : {}),
+    ...(query.administratorId ? { administratorId: query.administratorId } : {}),
+    ...(query.isActive === undefined ? {} : { isActive: query.isActive }),
+    ...(query.invoiceLifecycle === "OLD"
+      ? { invoices: { some: { emailStatus: "SENT" } } }
+      : query.invoiceLifecycle === "NEW"
+        ? { invoices: { none: { emailStatus: "SENT" } } }
+        : {}),
+    ...(query.search
+      ? {
+          OR: [
+            { name: { contains: query.search, mode: "insensitive" } },
+            { company: { contains: query.search, mode: "insensitive" } },
+            { email: { contains: query.search, mode: "insensitive" } },
+            { phone: { contains: query.search, mode: "insensitive" } },
+            { taxNumber: { contains: query.search, mode: "insensitive" } },
+          ],
+        }
+      : {}),
   };
 }
 
@@ -36,26 +74,24 @@ export async function listCustomers(query: {
   search?: string;
   isActive?: boolean;
   organizationId?: string;
+  administratorId?: string;
+  invoiceLifecycle?: "NEW" | "OLD";
   page: number;
   pageSize: number;
-}): Promise<{ items: CustomerRecord[]; total: number }> {
-  const where: Prisma.CustomerWhereInput = {
-    ...(query.organizationId ? { organizationId: query.organizationId } : {}),
-    ...(query.isActive === undefined ? {} : { isActive: query.isActive }),
-    ...(query.search
-      ? {
-          OR: [
-            { name: { contains: query.search, mode: "insensitive" } },
-            { company: { contains: query.search, mode: "insensitive" } },
-            { email: { contains: query.search, mode: "insensitive" } },
-            { phone: { contains: query.search, mode: "insensitive" } },
-            { taxNumber: { contains: query.search, mode: "insensitive" } },
-          ],
-        }
-      : {}),
-  };
+}): Promise<{
+  items: CustomerRecord[];
+  total: number;
+  counts: { all: number; new: number; old: number };
+}> {
+  const baseWhere = buildCustomerWhere({
+    search: query.search,
+    isActive: query.isActive,
+    organizationId: query.organizationId,
+    administratorId: query.administratorId,
+  });
+  const where = buildCustomerWhere(query);
 
-  const [items, total] = await prisma.$transaction([
+  const [items, total, all, old] = await prisma.$transaction([
     prisma.customer.findMany({
       where,
       include: customerInclude,
@@ -64,13 +100,69 @@ export async function listCustomers(query: {
       take: query.pageSize,
     }),
     prisma.customer.count({ where }),
+    prisma.customer.count({ where: baseWhere }),
+    prisma.customer.count({
+      where: {
+        ...baseWhere,
+        invoices: { some: { emailStatus: "SENT" } },
+      },
+    }),
   ]);
 
-  return { items, total };
+  return {
+    items,
+    total,
+    counts: {
+      all,
+      old,
+      new: Math.max(0, all - old),
+    },
+  };
+}
+
+export async function findLatestUnsentInvoicesByCustomerIds(
+  customerIds: string[],
+): Promise<Map<string, CustomerUnsentInvoiceSummary>> {
+  const map = new Map<string, CustomerUnsentInvoiceSummary>();
+  if (customerIds.length === 0) {
+    return map;
+  }
+
+  const invoices = await prisma.invoice.findMany({
+    where: {
+      customerId: { in: customerIds },
+      status: { not: "CANCELLED" },
+      emailStatus: { in: ["NOT_SENT", "FAILED"] },
+    },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      customerId: true,
+      invoiceNumber: true,
+      emailStatus: true,
+    },
+  });
+
+  for (const invoice of invoices) {
+    if (map.has(invoice.customerId)) {
+      continue;
+    }
+    if (invoice.emailStatus !== "NOT_SENT" && invoice.emailStatus !== "FAILED") {
+      continue;
+    }
+    map.set(invoice.customerId, {
+      id: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      emailStatus: invoice.emailStatus,
+    });
+  }
+
+  return map;
 }
 
 export async function createCustomer(data: {
   organizationId: string;
+  administratorId?: string | null;
   name: string;
   company?: string | null;
   email?: string | null;
@@ -92,6 +184,7 @@ export async function createCustomer(data: {
     return tx.customer.create({
       data: {
         organizationId: data.organizationId,
+        administratorId: data.administratorId ?? null,
         name: data.name,
         company: data.company ?? null,
         email: data.email ?? null,

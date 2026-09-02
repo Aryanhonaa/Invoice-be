@@ -5,6 +5,7 @@ import {
   startOfUtcDay,
   type DateRange,
 } from "../lib/date-range.js";
+import { buildInvoiceUserAccessFilter } from "../lib/admin-scope.js";
 import { money, moneyString } from "../lib/money.js";
 import { prisma } from "../lib/prisma.js";
 import type {
@@ -144,7 +145,6 @@ export async function loadReport(
     dateFrom: input.range.start.toISOString(),
     dateTo: new Date(input.range.end.getTime() - 1).toISOString(),
     currency,
-    teamId: null,
     overview,
     ...detail,
   };
@@ -623,27 +623,24 @@ function toInvoiceTableRow(row: {
 }
 
 function buildInvoiceWhere(scope: ReportQueryScope): Prisma.InvoiceWhereInput {
-  const access = hasInvoiceAccess(scope)
-    ? ({
-        OR: [
-          scope.createdById ? { createdById: scope.createdById } : undefined,
-          scope.assignedMemberId ? { assignedMemberId: scope.assignedMemberId } : undefined,
-          scope.assignedTeamIds && scope.assignedTeamIds.length > 0
-            ? { assignedTeamId: { in: scope.assignedTeamIds } }
-            : undefined,
-        ].filter(Boolean) as Prisma.InvoiceWhereInput[],
-      } satisfies Prisma.InvoiceWhereInput)
-    : undefined;
+  if (scope.userIds && scope.userIds.length === 0) {
+    return {
+      ...(scope.organizationId ? { organizationId: scope.organizationId } : {}),
+      id: { in: [] },
+    };
+  }
+
+  const access =
+    scope.userIds && scope.userIds.length > 0 ? buildInvoiceUserAccessFilter(scope.userIds) : undefined;
 
   return {
     ...(scope.organizationId ? { organizationId: scope.organizationId } : {}),
-    ...(scope.assignedTeamId ? { assignedTeamId: scope.assignedTeamId } : {}),
     ...(access ?? {}),
   };
 }
 
 function hasInvoiceAccess(scope: ReportQueryScope): boolean {
-  return Boolean(scope.createdById || scope.assignedMemberId || scope.assignedTeamIds);
+  return Boolean(scope.userIds && scope.userIds.length > 0);
 }
 
 function bucketAmounts(

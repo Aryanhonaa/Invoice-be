@@ -12,7 +12,14 @@ import type { AuthUser, OrganizationRecord } from "../types/auth.js";
 import { slugify } from "../utils/slug.js";
 import { recordAudit } from "./audit.service.js";
 
-function toOrganizationView(organization: OrganizationRecord) {
+function toOrganizationView(organization: {
+  id: string;
+  name: string;
+  slug: string;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}) {
   return {
     id: organization.id,
     name: organization.name,
@@ -59,7 +66,6 @@ function toOrganizationOverview(organization: OrganizationOverviewRecord) {
     admin: organization.admin,
     adminCount: organization.adminCount,
     memberCount: organization.memberCount,
-    teamCount: organization.teamCount,
     customerCount: organization.customerCount,
     invoiceCount: organization.invoiceCount,
   };

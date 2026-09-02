@@ -56,8 +56,6 @@ describe("RBAC", () => {
     const db = getTestDb();
     const orgA = seedOrganization(db, { name: "Org A", slug: "org-a" });
     const orgB = seedOrganization(db, { name: "Org B", slug: "org-b" });
-    const teamA = seedTeam(db, { organizationId: orgA.id, name: "Team A" });
-    const teamB = seedTeam(db, { organizationId: orgB.id, name: "Team B" });
     const passwordHash = await hashPassword(password);
 
     seedUser(db, {
@@ -65,12 +63,14 @@ describe("RBAC", () => {
       passwordHash,
       role: "SUPER_ADMIN",
     });
-    seedUser(db, {
+    const adminA = seedUser(db, {
       email: "admin-a@example.com",
       passwordHash,
       role: "ADMIN",
       organizationId: orgA.id,
     });
+    const teamA = seedTeam(db, { organizationId: orgA.id, name: "Team A", createdById: adminA.id });
+    const teamB = seedTeam(db, { organizationId: orgB.id, name: "Team B" });
     const memberA = seedUser(db, {
       email: "member-a@example.com",
       passwordHash,
@@ -103,7 +103,7 @@ describe("RBAC", () => {
   });
 
   it("allows ADMIN to create a MEMBER in their organization", async () => {
-    const { orgA } = await seedActors();
+    const { orgA, teamA } = await seedActors();
     const cookies = await loginAs("admin-a@example.com");
 
     const response = await request(app)
@@ -115,6 +115,7 @@ describe("RBAC", () => {
         firstName: "New",
         lastName: "Member",
         organizationId: orgA.id,
+        teamIds: [teamA.id],
       });
 
     expect(response.status).toBe(201);
@@ -205,6 +206,7 @@ describe("RBAC", () => {
         firstName: "Other",
         lastName: "Org",
         organizationId: teamB.organizationId,
+        teamIds: [teamB.id],
       });
 
     expect(memberCreate.status).toBe(403);

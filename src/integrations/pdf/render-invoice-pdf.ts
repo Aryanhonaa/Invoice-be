@@ -1,10 +1,12 @@
 import PDFDocument from "pdfkit";
 import type { InvoiceView } from "../../types/invoice.js";
 import { getInvoicePdfTemplate } from "./templates/standard.template.js";
+import type { InvoicePdfRenderOptions } from "./types.js";
 
 export async function renderInvoicePdf(
   invoice: InvoiceView,
   templateId?: string,
+  options?: InvoicePdfRenderOptions,
 ): Promise<Buffer> {
   const template = getInvoicePdfTemplate(templateId);
   const doc = new PDFDocument({ size: "A4", margin: 50 });
@@ -19,7 +21,10 @@ export async function renderInvoicePdf(
     });
     doc.on("error", reject);
 
-    template.render(doc, { invoice });
+    template.render(doc, {
+      invoice,
+      logo: options?.logo ?? null,
+    });
     doc.end();
   });
 }

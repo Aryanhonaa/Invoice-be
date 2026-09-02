@@ -4,6 +4,7 @@ import {
   createMemberController,
   getMemberController,
   listMembersController,
+  resetMemberPasswordController,
   updateMemberController,
   updateMemberStatusController,
 } from "../controllers/member.controller.js";
@@ -31,6 +32,11 @@ memberRouter.patch(
   "/:id/status",
   requirePermission(Permissions.USERS_UPDATE),
   asyncHandler(updateMemberStatusController),
+);
+memberRouter.post(
+  "/:id/password",
+  requirePermission(Permissions.USERS_UPDATE),
+  asyncHandler(resetMemberPasswordController),
 );
 memberRouter.patch(
   "/:id",

@@ -1,8 +1,21 @@
 import type { AccountStatus, Prisma, UserRole } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
-import type { AdminRecord, OrganizationRecord, TeamRecord, UserRecord } from "../types/auth.js";
+import type { AdminRecord, OrganizationRecord, UserRecord } from "../types/auth.js";
 
-const adminInclude = { organization: true } as const;
+const adminInclude = {
+  organization: true,
+  managedMembers: {
+    select: { id: true, firstName: true, lastName: true, email: true, status: true },
+  },
+  _count: { select: { managedMembers: true } },
+} as const;
+
+const memberInclude = {
+  organization: true,
+  administrator: {
+    select: { id: true, firstName: true, lastName: true, email: true },
+  },
+} as const;
 
 export async function findUserByEmail(email: string): Promise<UserRecord | null> {
   return prisma.user.findUnique({
@@ -69,6 +82,7 @@ export async function createUser(data: {
   role: UserRole;
   status?: AccountStatus;
   organizationId: string | null;
+  administratorId?: string | null;
   passwordResetToken?: string | null;
   passwordResetExpires?: Date | null;
 }): Promise<UserRecord> {
@@ -82,6 +96,7 @@ export async function createUser(data: {
       role: data.role,
       status: data.status ?? "ACTIVE",
       organizationId: data.organizationId,
+      administratorId: data.administratorId ?? null,
       passwordResetToken: data.passwordResetToken,
       passwordResetExpires: data.passwordResetExpires,
     },
@@ -100,9 +115,11 @@ export async function updateUser(
       | "status"
       | "lastLoginAt"
       | "organizationId"
+      | "administratorId"
       | "passwordHash"
       | "passwordResetToken"
       | "passwordResetExpires"
+      | "avatarObjectKey"
     >
   >,
 ): Promise<UserRecord> {
@@ -121,19 +138,24 @@ export async function countUsersByRole(role: UserRole): Promise<number> {
   });
 }
 
+export async function listMemberIdsByAdministrator(administratorId: string): Promise<string[]> {
+  const rows = await prisma.user.findMany({
+    where: { role: "MEMBER", administratorId },
+    select: { id: true },
+  });
+  return rows.map((row) => row.id);
+}
+
 export async function findMemberById(id: string): Promise<
   | (UserRecord & {
       organization: OrganizationRecord | null;
-      teamMemberships: Array<{ team: TeamRecord }>;
+      administrator: { id: string; firstName: string; lastName: string; email: string } | null;
     })
   | null
 > {
   return prisma.user.findFirst({
     where: { id, role: "MEMBER" },
-    include: {
-      organization: true,
-      teamMemberships: { include: { team: true } },
-    },
+    include: memberInclude,
   });
 }
 
@@ -141,14 +163,14 @@ export async function listMembers(query: {
   search?: string;
   status?: AccountStatus;
   organizationId?: string;
-  teamId?: string;
+  administratorId?: string;
   page: number;
   pageSize: number;
 }): Promise<{
   items: Array<
     UserRecord & {
       organization: OrganizationRecord | null;
-      teamMemberships: Array<{ team: TeamRecord }>;
+      administrator: { id: string; firstName: string; lastName: string; email: string } | null;
     }
   >;
   total: number;
@@ -157,9 +179,7 @@ export async function listMembers(query: {
     role: "MEMBER",
     ...(query.status ? { status: query.status } : {}),
     ...(query.organizationId ? { organizationId: query.organizationId } : {}),
-    ...(query.teamId
-      ? { teamMemberships: { some: { teamId: query.teamId } } }
-      : {}),
+    ...(query.administratorId ? { administratorId: query.administratorId } : {}),
     ...(query.search
       ? {
           OR: [
@@ -175,10 +195,7 @@ export async function listMembers(query: {
   const [items, total] = await prisma.$transaction([
     prisma.user.findMany({
       where,
-      include: {
-        organization: true,
-        teamMemberships: { include: { team: true } },
-      },
+      include: memberInclude,
       orderBy: { createdAt: "desc" },
       skip: (query.page - 1) * query.pageSize,
       take: query.pageSize,

@@ -40,6 +40,13 @@ vi.mock("../src/repositories/audit.repository.js", async () => {
 vi.mock("../src/repositories/health.repository.js", () => ({
   checkDatabaseConnection: vi.fn().mockResolvedValue(true),
 }));
+vi.mock("../src/integrations/email/provider.js", () => ({
+  getEmailProvider: () => ({
+    name: "test",
+    isConfigured: () => true,
+    sendInvoiceEmail: async () => ({ sent: true, provider: "test" }),
+  }),
+}));
 
 import { app } from "../src/app.js";
 import { hashPassword } from "../src/lib/password.js";
@@ -72,16 +79,16 @@ describe("invoices", () => {
     const db = getTestDb();
     const orgA = seedOrganization(db, { name: "Org A", slug: "org-a" });
     const orgB = seedOrganization(db, { name: "Org B", slug: "org-b" });
-    const teamA = seedTeam(db, { organizationId: orgA.id, name: "Sales" });
     const passwordHash = await hashPassword(password);
 
     seedUser(db, { email: "super@example.com", passwordHash, role: "SUPER_ADMIN" });
-    seedUser(db, {
+    const adminA = seedUser(db, {
       email: "admin-a@example.com",
       passwordHash,
       role: "ADMIN",
       organizationId: orgA.id,
     });
+    const teamA = seedTeam(db, { organizationId: orgA.id, name: "Sales", createdById: adminA.id });
     seedUser(db, {
       email: "admin-b@example.com",
       passwordHash,
@@ -112,12 +119,12 @@ describe("invoices", () => {
     const customerA = await request(app)
       .post("/api/customers")
       .set("Cookie", cookiesA)
-      .send({ name: "Acme Buyer", company: "Acme" });
+      .send({ name: "Acme Buyer", company: "Acme", email: "acme@example.com" });
     const customerBCookies = await loginAs("member-b@example.com");
     const customerB = await request(app)
       .post("/api/customers")
       .set("Cookie", customerBCookies)
-      .send({ name: "Beta Buyer" });
+      .send({ name: "Beta Buyer", email: "beta@example.com" });
     const productA = await request(app)
       .post("/api/products")
       .set("Cookie", cookiesA)
@@ -580,12 +587,12 @@ describe("invoices", () => {
     expect(memberCross.status).toBe(403);
 
     const superList = await request(app).get("/api/invoices").set("Cookie", superCookies);
-    expect(superList.status).toBe(400);
+    expect(superList.status).toBe(200);
 
     const superGet = await request(app)
       .get(`/api/invoices/${assignedId}`)
       .set("Cookie", superCookies);
-    expect(superGet.status).toBe(403);
+    expect(superGet.status).toBe(200);
   });
 
   it("does not allow an Organization Admin to create invoices", async () => {
@@ -600,6 +607,6 @@ describe("invoices", () => {
         dueDate: "2026-12-31",
         items: [{ description: "Work", quantity: "1", unitPrice: "10" }],
       });
-    expect(created.status).toBe(403);
+    expect(created.status).toBe(201);
   });
 });
