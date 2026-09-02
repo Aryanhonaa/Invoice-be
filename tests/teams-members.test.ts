@@ -56,8 +56,6 @@ describe("teams and members", () => {
     const db = getTestDb();
     const orgA = seedOrganization(db, { name: "Org A", slug: "org-a" });
     const orgB = seedOrganization(db, { name: "Org B", slug: "org-b" });
-    const teamA = seedTeam(db, { organizationId: orgA.id, name: "Alpha" });
-    const teamB = seedTeam(db, { organizationId: orgB.id, name: "Bravo" });
     const passwordHash = await hashPassword(password);
 
     seedUser(db, {
@@ -65,18 +63,20 @@ describe("teams and members", () => {
       passwordHash,
       role: "SUPER_ADMIN",
     });
-    seedUser(db, {
+    const adminA = seedUser(db, {
       email: "admin-a@example.com",
       passwordHash,
       role: "ADMIN",
       organizationId: orgA.id,
     });
-    seedUser(db, {
+    const adminB = seedUser(db, {
       email: "admin-b@example.com",
       passwordHash,
       role: "ADMIN",
       organizationId: orgB.id,
     });
+    const teamA = seedTeam(db, { organizationId: orgA.id, name: "Alpha", createdById: adminA.id });
+    const teamB = seedTeam(db, { organizationId: orgB.id, name: "Bravo", createdById: adminB.id });
     const memberA = seedUser(db, {
       email: "member-a@example.com",
       passwordHash,
@@ -90,8 +90,10 @@ describe("teams and members", () => {
       organizationId: orgB.id,
     });
     db.teamMembers.push({ teamId: teamA.id, userId: memberA.id });
+    db.teamMembers.push({ teamId: teamA.id, userId: adminA.id });
+    db.teamMembers.push({ teamId: teamB.id, userId: adminB.id });
 
-    return { orgA, orgB, teamA, teamB, memberA, memberB };
+    return { orgA, orgB, teamA, teamB, memberA, memberB, adminA, adminB };
   }
 
   it("allows ADMIN to create and list teams in their organization", async () => {
@@ -134,17 +136,20 @@ describe("teams and members", () => {
     expect(response.status).toBe(403);
   });
 
-  it("allows SUPER_ADMIN to manage teams in any organization", async () => {
-    const { orgB, teamB } = await seedActors();
+  it("allows SUPER_ADMIN to view and update teams in any organization without creating them", async () => {
+    const { teamA, teamB } = await seedActors();
     const cookies = await loginAs("super@example.com");
 
     const created = await request(app)
       .post("/api/teams")
       .set("Cookie", cookies)
-      .send({ name: "Global", organizationId: orgB.id });
+      .send({ name: "Global" });
+    expect(created.status).toBe(403);
 
-    expect(created.status).toBe(201);
-    expect(created.body.data.team.organizationId).toBe(orgB.id);
+    const listed = await request(app).get("/api/teams").set("Cookie", cookies);
+    expect(listed.status).toBe(200);
+    const ids = listed.body.data.items.map((team: { id: string }) => team.id);
+    expect(ids).toEqual(expect.arrayContaining([teamA.id, teamB.id]));
 
     const updated = await request(app)
       .patch(`/api/teams/${teamB.id}`)
@@ -197,6 +202,7 @@ describe("teams and members", () => {
         lastName: "User",
         organizationId: orgB.id,
         password,
+        teamIds: [teamB.id],
       });
     expect(memberCreate.status).toBe(403);
 
@@ -237,7 +243,6 @@ describe("teams and members", () => {
         email: "  New.Member@Example.com ",
         firstName: "New",
         lastName: "Member",
-        phone: "555-0111",
         password,
         teamIds: [teamA.id],
       });
@@ -333,5 +338,74 @@ describe("teams and members", () => {
       .get(`/api/teams/${created.body.data.team.id}`)
       .set("Cookie", memberCookies);
     expect(denied.status).toBe(403);
+  });
+
+  it("lets an Administrator create multiple teams and hides another Administrator's teams", async () => {
+    const { orgA } = await seedActors();
+    const db = getTestDb();
+    const otherAdmin = seedUser(db, {
+      email: "admin-c@example.com",
+      passwordHash: await hashPassword(password),
+      role: "ADMIN",
+      organizationId: orgA.id,
+    });
+    const teamC = seedTeam(db, {
+      organizationId: orgA.id,
+      name: "Charlie",
+      createdById: otherAdmin.id,
+    });
+
+    const superCookies = await loginAs("super@example.com");
+    const forbiddenCreate = await request(app)
+      .post("/api/teams")
+      .set("Cookie", superCookies)
+      .send({ name: "Platform" });
+    expect(forbiddenCreate.status).toBe(403);
+
+    const cookies = await loginAs("admin-a@example.com");
+    const delta = await request(app).post("/api/teams").set("Cookie", cookies).send({ name: "Delta" });
+    expect(delta.status).toBe(201);
+
+    const listed = await request(app).get("/api/teams").set("Cookie", cookies);
+    expect(listed.status).toBe(200);
+    const names = listed.body.data.items.map((team: { name: string }) => team.name);
+    expect(names).toEqual(expect.arrayContaining(["Alpha", "Delta"]));
+    expect(names).not.toContain("Charlie");
+
+    const deniedTeam = await request(app).get(`/api/teams/${teamC.id}`).set("Cookie", cookies);
+    expect(deniedTeam.status).toBe(403);
+  });
+
+  it("rejects an Administrator assigning a member to an unauthorized team", async () => {
+    const { orgA } = await seedActors();
+    const db = getTestDb();
+    const otherAdmin = seedUser(db, {
+      email: "admin-c@example.com",
+      passwordHash: await hashPassword(password),
+      role: "ADMIN",
+      organizationId: orgA.id,
+    });
+    const teamC = seedTeam(db, {
+      organizationId: orgA.id,
+      name: "Charlie",
+      createdById: otherAdmin.id,
+    });
+    const cookies = await loginAs("admin-a@example.com");
+
+    const response = await request(app)
+      .post("/api/members")
+      .set("Cookie", cookies)
+      .send({
+        email: "outsider@example.com",
+        firstName: "Out",
+        lastName: "Sider",
+        password,
+        teamIds: [teamC.id],
+      });
+
+    expect(response.status).toBe(403);
+    expect(response.body.error?.message ?? response.body.message).toMatch(
+      /not authorized to add members to this team/i,
+    );
   });
 });

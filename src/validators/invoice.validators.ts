@@ -28,7 +28,6 @@ export const createInvoiceSchema = z
     currency: z.string().trim().min(1).max(8).optional(),
     notes: z.string().trim().min(1).optional(),
     terms: z.string().trim().min(1).optional(),
-    assignedTeamId: z.string().uuid().optional(),
     assignedMemberId: z.string().uuid().optional(),
     items: z.array(invoiceItemSchema).min(1),
   })
@@ -43,7 +42,6 @@ export const updateInvoiceSchema = z
     currency: z.string().trim().min(1).max(8).optional(),
     notes: z.string().trim().min(1).nullable().optional(),
     terms: z.string().trim().min(1).nullable().optional(),
-    assignedTeamId: z.string().uuid().nullable().optional(),
     assignedMemberId: z.string().uuid().nullable().optional(),
     items: z.array(invoiceItemSchema).min(1).optional(),
   })
@@ -56,7 +54,6 @@ export const listInvoicesQuerySchema = z.object({
     .optional(),
   customerId: z.string().uuid().optional(),
   organizationId: z.string().uuid().optional(),
-  teamId: z.string().uuid().optional(),
   dateFrom: z.string().optional(),
   dateTo: z.string().optional(),
   sort: z.enum(["invoiceDate", "dueDate", "total", "invoiceNumber", "createdAt"]).optional(),

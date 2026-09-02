@@ -1,10 +1,17 @@
 import { toPublicUser } from "./public-user.js";
-import type { MemberView, OrganizationRecord, TeamRecord, UserRecord } from "../types/auth.js";
+import type { MemberView, OrganizationRecord, UserRecord } from "../types/auth.js";
+
+export interface AdministratorSummary {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+}
 
 export function toMemberView(
   user: UserRecord,
   organization: OrganizationRecord | null,
-  teams: Pick<TeamRecord, "id" | "name" | "isActive">[],
+  administrator: AdministratorSummary | null,
 ): MemberView {
   return {
     ...toPublicUser(user),
@@ -16,10 +23,13 @@ export function toMemberView(
           isActive: organization.isActive,
         }
       : null,
-    teams: teams.map((team) => ({
-      id: team.id,
-      name: team.name,
-      isActive: team.isActive,
-    })),
+    administrator: administrator
+      ? {
+          id: administrator.id,
+          firstName: administrator.firstName,
+          lastName: administrator.lastName,
+          email: administrator.email,
+        }
+      : null,
   };
 }

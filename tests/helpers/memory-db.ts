@@ -36,6 +36,7 @@ export interface MemoryAddress {
 export interface MemoryCustomer {
   id: string;
   organizationId: string;
+  administratorId: string | null;
   name: string;
   company: string | null;
   email: string | null;
@@ -108,6 +109,11 @@ export interface MemoryInvoice {
   terms: string | null;
   billingAddressId: string | null;
   shippingAddressId: string | null;
+  shareToken: string | null;
+  pdfObjectKey: string | null;
+  emailStatus: "NOT_SENT" | "SENT" | "FAILED";
+  emailSentAt: Date | null;
+  emailLastError: string | null;
   sentAt: Date | null;
   viewedAt: Date | null;
   createdAt: Date;
@@ -229,9 +235,11 @@ export function createMemoryRepositories(db: MemoryDb) {
           firstName: data.firstName,
           lastName: data.lastName,
           phone: data.phone ?? null,
+          avatarObjectKey: null,
           role: data.role,
           status: data.status ?? "ACTIVE",
           organizationId: data.organizationId,
+          administratorId: null,
           lastLoginAt: null,
           passwordResetToken: data.passwordResetToken ?? null,
           passwordResetExpires: data.passwordResetExpires ?? null,
@@ -283,6 +291,13 @@ export function createMemoryRepositories(db: MemoryDb) {
           organization:
             db.organizations.find((organization) => organization.id === user.organizationId) ??
             null,
+          createdTeams: db.teams.filter((team) => team.createdById === user.id),
+          teamMemberships: db.teamMembers
+            .filter((membership) => membership.userId === user.id)
+            .map((membership) => ({
+              team: db.teams.find((team) => team.id === membership.teamId)!,
+            }))
+            .filter((item) => item.team),
         };
       },
       listAdmins: async (query: {
@@ -318,6 +333,13 @@ export function createMemoryRepositories(db: MemoryDb) {
           organization:
             db.organizations.find((organization) => organization.id === user.organizationId) ??
             null,
+          createdTeams: db.teams.filter((team) => team.createdById === user.id),
+          teamMemberships: db.teamMembers
+            .filter((membership) => membership.userId === user.id)
+            .map((membership) => ({
+              team: db.teams.find((team) => team.id === membership.teamId)!,
+            }))
+            .filter((item) => item.team),
         }));
 
         return { items, total: filtered.length };
@@ -345,6 +367,7 @@ export function createMemoryRepositories(db: MemoryDb) {
         status?: AccountStatus;
         organizationId?: string;
         teamId?: string;
+        teamIds?: string[];
         page: number;
         pageSize: number;
       }) => {
@@ -360,7 +383,18 @@ export function createMemoryRepositories(db: MemoryDb) {
             return false;
           }
           if (
+            query.teamIds &&
+            query.teamIds.length > 0 &&
+            !db.teamMembers.some(
+              (membership) =>
+                query.teamIds!.includes(membership.teamId) && membership.userId === user.id,
+            )
+          ) {
+            return false;
+          }
+          if (
             query.teamId &&
+            !query.teamIds?.length &&
             !db.teamMembers.some(
               (membership) => membership.teamId === query.teamId && membership.userId === user.id,
             )
@@ -436,6 +470,23 @@ export function createMemoryRepositories(db: MemoryDb) {
         }
         return db.organizations.length === 1 ? db.organizations[0].id : null;
       },
+      getDefaultOrganizationId: async () => {
+        const active = db.organizations.filter((organization) => organization.isActive);
+        if (active.length === 1) {
+          return active[0].id;
+        }
+        if (active.length > 1) {
+          return [...active].sort(
+            (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
+          )[0].id;
+        }
+        if (db.organizations.length === 0) {
+          return null;
+        }
+        return [...db.organizations].sort(
+          (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
+        )[0].id;
+      },
       listOrganizationOverviews: async () =>
         [...db.organizations]
           .sort((left, right) => left.name.localeCompare(right.name))
@@ -453,6 +504,7 @@ export function createMemoryRepositories(db: MemoryDb) {
           id: randomUUID(),
           name: data.name,
           slug: data.slug,
+          logoObjectKey: null,
           isActive: true,
           createdAt: now(),
           updatedAt: now(),
@@ -462,7 +514,7 @@ export function createMemoryRepositories(db: MemoryDb) {
       },
       updateOrganization: async (
         id: string,
-        data: Partial<Pick<OrganizationRecord, "name" | "slug" | "isActive">>,
+        data: Partial<Pick<OrganizationRecord, "name" | "slug" | "isActive" | "logoObjectKey">>,
       ) => {
         const organization = db.organizations.find((item) => item.id === id);
         if (!organization) {
@@ -482,6 +534,7 @@ export function createMemoryRepositories(db: MemoryDb) {
         isActive?: boolean;
         organizationId?: string;
         memberUserId?: string;
+        createdById?: string;
         page: number;
         pageSize: number;
       }) => {
@@ -493,8 +546,12 @@ export function createMemoryRepositories(db: MemoryDb) {
           if (query.isActive !== undefined && team.isActive !== query.isActive) {
             return false;
           }
+          if (query.createdById && team.createdById !== query.createdById) {
+            return false;
+          }
           if (
             query.memberUserId &&
+            !query.createdById &&
             !db.teamMembers.some(
               (membership) =>
                 membership.teamId === team.id && membership.userId === query.memberUserId,
@@ -530,16 +587,29 @@ export function createMemoryRepositories(db: MemoryDb) {
           }
           return db.users.some((user) => user.id === membership.userId && user.role === "ADMIN");
         }).length,
+      findTeamAdmin: async (teamId: string) => {
+        const membership = db.teamMembers.find((item) => {
+          if (item.teamId !== teamId) {
+            return false;
+          }
+          return db.users.some((user) => user.id === item.userId && user.role === "ADMIN");
+        });
+        return membership
+          ? (db.users.find((user) => user.id === membership.userId) ?? null)
+          : null;
+      },
       isTeamMember: async (teamId: string, userId: string) =>
         db.teamMembers.some((member) => member.teamId === teamId && member.userId === userId),
       createTeam: async (data: {
         organizationId: string;
         name: string;
         description?: string;
+        createdById?: string;
       }) => {
         const team: TeamRecord = {
           id: randomUUID(),
           organizationId: data.organizationId,
+          createdById: data.createdById ?? null,
           name: data.name,
           description: data.description ?? null,
           isActive: true,
@@ -565,6 +635,9 @@ export function createMemoryRepositories(db: MemoryDb) {
         return team;
       },
       addTeamMember: async (teamId: string, userId: string) => {
+        if (db.teamMembers.some((membership) => membership.teamId === teamId && membership.userId === userId)) {
+          return;
+        }
         db.teamMembers.push({ teamId, userId });
       },
       removeTeamMember: async (teamId: string, userId: string) => {
@@ -582,6 +655,8 @@ export function createMemoryRepositories(db: MemoryDb) {
           .filter((membership) => membership.userId === userId)
           .map((membership) => db.teams.find((team) => team.id === membership.teamId))
           .filter((team): team is TeamRecord => Boolean(team)),
+      listTeamsCreatedBy: async (userId: string) =>
+        db.teams.filter((team) => team.createdById === userId),
     },
     customer: {
       findCustomerById: async (id: string) => {
@@ -592,12 +667,45 @@ export function createMemoryRepositories(db: MemoryDb) {
         search?: string;
         isActive?: boolean;
         organizationId?: string;
+        administratorId?: string;
+        invoiceLifecycle?: "NEW" | "OLD";
         page: number;
         pageSize: number;
       }) => {
         const search = query.search?.toLowerCase();
         const filtered = db.customers.filter((customer) => {
           if (query.organizationId && customer.organizationId !== query.organizationId) {
+            return false;
+          }
+          if (query.administratorId && customer.administratorId !== query.administratorId) {
+            return false;
+          }
+          if (query.isActive !== undefined && customer.isActive !== query.isActive) {
+            return false;
+          }
+          if (search) {
+            const haystack =
+              `${customer.name} ${customer.company ?? ""} ${customer.email ?? ""} ${customer.phone ?? ""} ${customer.taxNumber ?? ""}`.toLowerCase();
+            if (!haystack.includes(search)) {
+              return false;
+            }
+          }
+          const sentCount = db.invoices.filter(
+            (invoice) => invoice.customerId === customer.id && invoice.emailStatus === "SENT",
+          ).length;
+          if (query.invoiceLifecycle === "OLD" && sentCount === 0) {
+            return false;
+          }
+          if (query.invoiceLifecycle === "NEW" && sentCount > 0) {
+            return false;
+          }
+          return true;
+        });
+        const baseFiltered = db.customers.filter((customer) => {
+          if (query.organizationId && customer.organizationId !== query.organizationId) {
+            return false;
+          }
+          if (query.administratorId && customer.administratorId !== query.administratorId) {
             return false;
           }
           if (query.isActive !== undefined && customer.isActive !== query.isActive) {
@@ -612,16 +720,55 @@ export function createMemoryRepositories(db: MemoryDb) {
           }
           return true;
         });
+        const old = baseFiltered.filter((customer) =>
+          db.invoices.some(
+            (invoice) => invoice.customerId === customer.id && invoice.emailStatus === "SENT",
+          ),
+        ).length;
         const start = (query.page - 1) * query.pageSize;
         return {
           items: filtered.slice(start, start + query.pageSize).map((customer) =>
             hydrateCustomer(db, customer),
           ),
           total: filtered.length,
+          counts: {
+            all: baseFiltered.length,
+            old,
+            new: Math.max(0, baseFiltered.length - old),
+          },
         };
+      },
+      findLatestUnsentInvoicesByCustomerIds: async (customerIds: string[]) => {
+        const map = new Map<
+          string,
+          { id: string; invoiceNumber: string; emailStatus: "NOT_SENT" | "FAILED" }
+        >();
+        for (const invoice of [...db.invoices].sort(
+          (left, right) => right.createdAt.getTime() - left.createdAt.getTime(),
+        )) {
+          if (!customerIds.includes(invoice.customerId)) {
+            continue;
+          }
+          if (invoice.status === "CANCELLED") {
+            continue;
+          }
+          if (invoice.emailStatus !== "NOT_SENT" && invoice.emailStatus !== "FAILED") {
+            continue;
+          }
+          if (map.has(invoice.customerId)) {
+            continue;
+          }
+          map.set(invoice.customerId, {
+            id: invoice.id,
+            invoiceNumber: invoice.invoiceNumber,
+            emailStatus: invoice.emailStatus,
+          });
+        }
+        return map;
       },
       createCustomer: async (data: {
         organizationId: string;
+        administratorId?: string | null;
         name: string;
         company?: string | null;
         email?: string | null;
@@ -639,6 +786,7 @@ export function createMemoryRepositories(db: MemoryDb) {
         const customer: MemoryCustomer = {
           id: randomUUID(),
           organizationId: data.organizationId,
+          administratorId: data.administratorId ?? null,
           name: data.name,
           company: data.company ?? null,
           email: data.email ?? null,
@@ -890,6 +1038,9 @@ function applyAddressUpdate(
 }
 
 function hydrateCustomer(db: MemoryDb, customer: MemoryCustomer) {
+  const sentCount = db.invoices.filter(
+    (invoice) => invoice.customerId === customer.id && invoice.emailStatus === "SENT",
+  ).length;
   return {
     ...customer,
     billingAddress:
@@ -899,6 +1050,7 @@ function hydrateCustomer(db: MemoryDb, customer: MemoryCustomer) {
     organization:
       db.organizations.find((organization) => organization.id === customer.organizationId) ??
       null,
+    _count: { invoices: sentCount },
   };
 }
 
@@ -931,9 +1083,11 @@ export function seedUser(
     firstName: data.firstName ?? "Test",
     lastName: data.lastName ?? "User",
     phone: data.phone ?? null,
+    avatarObjectKey: null,
     role: data.role,
     status: data.status ?? "ACTIVE",
     organizationId: data.organizationId ?? null,
+    administratorId: null,
     lastLoginAt: null,
     passwordResetToken: null,
     passwordResetExpires: null,
@@ -952,6 +1106,7 @@ export function seedOrganization(
     id: randomUUID(),
     name: data.name,
     slug: data.slug,
+    logoObjectKey: null,
     isActive: true,
     createdAt: now(),
     updatedAt: now(),
@@ -962,11 +1117,12 @@ export function seedOrganization(
 
 export function seedTeam(
   db: MemoryDb,
-  data: { organizationId: string; name: string },
+  data: { organizationId: string; name: string; createdById?: string },
 ): TeamRecord {
   const team: TeamRecord = {
     id: randomUUID(),
     organizationId: data.organizationId,
+    createdById: data.createdById ?? null,
     name: data.name,
     description: null,
     isActive: true,
@@ -981,6 +1137,10 @@ function createMemoryInvoiceRepos(db: MemoryDb) {
   return {
     findInvoiceById: async (id: string) => {
       const invoice = db.invoices.find((item) => item.id === id);
+      return invoice ? hydrateInvoice(db, invoice) : null;
+    },
+    findInvoiceByShareToken: async (token: string) => {
+      const invoice = db.invoices.find((item) => item.shareToken === token);
       return invoice ? hydrateInvoice(db, invoice) : null;
     },
     findInvoiceByOrganizationAndNumber: async (organizationId: string, invoiceNumber: string) => {
@@ -1013,6 +1173,7 @@ function createMemoryInvoiceRepos(db: MemoryDb) {
       createdById?: string;
       assignedMemberId?: string;
       assignedTeamIds?: string[];
+      includeUnassigned?: boolean;
       assignedTeamId?: string;
       dateFrom?: Date;
       dateTo?: Date;
@@ -1051,11 +1212,12 @@ function createMemoryInvoiceRepos(db: MemoryDb) {
         if (query.assignedTeamId && invoice.assignedTeamId !== query.assignedTeamId) {
           return false;
         }
-        if (query.createdById || query.assignedMemberId || query.assignedTeamIds) {
+        if (query.createdById || query.assignedMemberId || query.assignedTeamIds || query.includeUnassigned) {
           const allowed =
             invoice.createdById === query.createdById ||
             invoice.assignedMemberId === query.assignedMemberId ||
-            (invoice.assignedTeamId && query.assignedTeamIds?.includes(invoice.assignedTeamId));
+            (invoice.assignedTeamId && query.assignedTeamIds?.includes(invoice.assignedTeamId)) ||
+            Boolean(query.includeUnassigned && invoice.assignedTeamId === null);
           if (!allowed) {
             return false;
           }
@@ -1145,6 +1307,11 @@ function createMemoryInvoiceRepos(db: MemoryDb) {
         terms: data.terms ?? null,
         billingAddressId: billing?.id ?? null,
         shippingAddressId: shipping?.id ?? null,
+        shareToken: null,
+        pdfObjectKey: null,
+        emailStatus: "NOT_SENT",
+        emailSentAt: null,
+        emailLastError: null,
         sentAt: null,
         viewedAt: null,
         createdAt: now(),
@@ -1276,9 +1443,10 @@ function createMemoryPaymentRepos(db: MemoryDb) {
       invoiceIds?: string[];
       assignedTeamId?: string;
       invoiceAccess?: {
-        createdById: string;
-        assignedMemberId: string;
+        createdById?: string;
+        assignedMemberId?: string;
         assignedTeamIds: string[];
+        includeUnassigned?: boolean;
       };
       dateFrom?: Date;
       dateTo?: Date;
@@ -1313,7 +1481,8 @@ function createMemoryPaymentRepos(db: MemoryDb) {
             invoice.createdById === query.invoiceAccess.createdById ||
             invoice.assignedMemberId === query.invoiceAccess.assignedMemberId ||
             (invoice.assignedTeamId !== null &&
-              query.invoiceAccess.assignedTeamIds.includes(invoice.assignedTeamId));
+              query.invoiceAccess.assignedTeamIds.includes(invoice.assignedTeamId)) ||
+            Boolean(query.invoiceAccess.includeUnassigned && invoice.assignedTeamId === null);
           if (!allowed) {
             return false;
           }
@@ -1634,21 +1803,27 @@ function createMemoryDashboardRepos(db: MemoryDb) {
         paidAmount: moneyString(revenue),
         outstandingBalance: moneyString(outstandingTotal.minus(outstandingPaid)),
         overdueAmount: moneyString(overdueTotal.minus(overduePaid)),
+        draftInvoiceCount: invoices.filter((invoice) => invoice.status === "DRAFT").length,
+        sentInvoiceCount: invoices.filter((invoice) => invoice.status === "SENT").length,
+        viewedInvoiceCount: invoices.filter(
+          (invoice) => invoice.status === "VIEWED" && invoice.dueDate >= today,
+        ).length,
+        cancelledInvoiceCount: invoices.filter((invoice) => invoice.status === "CANCELLED").length,
+        failedEmailCount: invoices.filter((invoice) => invoice.emailStatus === "FAILED").length,
+        adminsWithoutMembers: db.users.filter(
+          (user) =>
+            user.role === "ADMIN" &&
+            (!scope.organizationId || user.organizationId === scope.organizationId) &&
+            !db.users.some((member) => member.role === "MEMBER" && member.administratorId === user.id),
+        ).length,
         currency,
+        currencies: [...new Set(invoices.map((invoice) => invoice.currency).filter(Boolean))],
         granularity: daily ? "day" : "month",
         statusCounts: [
+          { status: "DRAFT", count: invoices.filter((invoice) => invoice.status === "DRAFT").length },
+          { status: "SENT", count: invoices.filter((invoice) => invoice.status === "SENT").length },
+          { status: "VIEWED", count: invoices.filter((invoice) => invoice.status === "VIEWED").length },
           { status: "PAID", count: invoices.filter((invoice) => invoice.status === "PAID").length },
-          {
-            status: "PENDING",
-            count: invoices.filter(
-              (invoice) =>
-                ["SENT", "VIEWED"].includes(invoice.status) && invoice.dueDate >= today,
-            ).length,
-          },
-          {
-            status: "PARTIALLY_PAID",
-            count: invoices.filter((invoice) => invoice.status === "PARTIALLY_PAID").length,
-          },
           { status: "OVERDUE", count: overdue.length },
           {
             status: "CANCELLED",
@@ -1656,8 +1831,53 @@ function createMemoryDashboardRepos(db: MemoryDb) {
           },
         ],
         revenueSeries,
+        invoiceCountSeries: buildMemoryCountSeries(
+          invoices.map((invoice) => invoice.invoiceDate),
+          range,
+          daily,
+        ),
+        invoiceCreatedSeries: buildMemoryCountSeries(
+          invoices.map((invoice) => invoice.createdAt),
+          range,
+          daily,
+        ),
+        invoiceSentSeries: buildMemoryCountSeries(
+          invoices
+            .map((invoice) => invoice.sentAt)
+            .filter((value): value is Date => value instanceof Date),
+          range,
+          daily,
+        ),
+        invoicePaidSeries: buildMemoryCountSeries(
+          invoices.filter((invoice) => invoice.status === "PAID").map((invoice) => invoice.updatedAt),
+          range,
+          daily,
+        ),
         paymentSeries: revenueSeries,
         expenseSeries,
+        revenueByCurrency: [
+          {
+            currency,
+            amount: moneyString(revenue),
+          },
+        ],
+        outstandingByCurrency: [
+          {
+            currency,
+            amount: moneyString(outstandingTotal.minus(outstandingPaid)),
+          },
+        ],
+        overdueByCurrency: [
+          {
+            currency,
+            amount: moneyString(overdueTotal.minus(overduePaid)),
+          },
+        ],
+        emailDelivery: {
+          sent: invoices.filter((invoice) => invoice.emailStatus === "SENT").length,
+          failed: invoices.filter((invoice) => invoice.emailStatus === "FAILED").length,
+          notSent: invoices.filter((invoice) => invoice.emailStatus === "NOT_SENT").length,
+        },
         teamPerformance: [...teamGroups.entries()]
           .map(([teamId, group]) => ({
             teamId,
@@ -1690,6 +1910,55 @@ function createMemoryDashboardRepos(db: MemoryDb) {
             invoiceCount: group.count,
             revenue: moneyString(group.paid),
           })),
+        administratorOverview: db.users
+          .filter(
+            (user) =>
+              user.role === "ADMIN" &&
+              (!scope.organizationId || user.organizationId === scope.organizationId),
+          )
+          .map((admin) => {
+            const related = invoices.filter(
+              (invoice) =>
+                invoice.createdById === admin.id ||
+                db.users.some(
+                  (member) =>
+                    member.administratorId === admin.id && member.id === invoice.assignedMemberId,
+                ),
+            );
+            const paid = related.reduce((sum, invoice) => sum.plus(invoice.amountPaid), money(0));
+            const total = related.reduce((sum, invoice) => sum.plus(invoice.total), money(0));
+            return {
+              administratorId: admin.id,
+              administratorName: `${admin.firstName} ${admin.lastName}`.trim(),
+              status: admin.status,
+              memberCount: db.users.filter(
+                (member) => member.role === "MEMBER" && member.administratorId === admin.id,
+              ).length,
+              customerCount: db.customers.filter((customer) => customer.administratorId === admin.id)
+                .length,
+              invoiceCount: related.length,
+              paidInvoiceCount: related.filter((invoice) => invoice.status === "PAID").length,
+              revenue: moneyString(paid),
+              outstanding: moneyString(total.minus(paid)),
+              currency,
+            };
+          }),
+        recentCustomers: [...db.customers]
+          .filter((customer) => !scope.organizationId || customer.organizationId === scope.organizationId)
+          .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())
+          .slice(0, 5)
+          .map((customer) => {
+            const related = invoices.filter((invoice) => invoice.customerId === customer.id);
+            const paid = related.reduce((sum, invoice) => sum.plus(invoice.amountPaid), money(0));
+            return {
+              customerId: customer.id,
+              customerName: customer.name,
+              createdAt: customer.createdAt.toISOString(),
+              invoiceCount: related.length,
+              paid: moneyString(paid),
+              currency,
+            };
+          }),
         recentInvoices: [...invoices]
           .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())
           .slice(0, 5)
@@ -1756,6 +2025,24 @@ function buildMemoryMoneySeries(
   }));
 }
 
+function buildMemoryCountSeries(dates: Date[], range: DateRange, daily: boolean) {
+  const buckets = new Map<string, number>();
+  for (const key of periodKeys(range, daily)) {
+    buckets.set(key, 0);
+  }
+  for (const at of dates) {
+    const key = periodKey(at, daily);
+    const current = buckets.get(key);
+    if (current !== undefined) {
+      buckets.set(key, current + 1);
+    }
+  }
+  return [...buckets.entries()].map(([period, count]) => ({
+    period,
+    amount: String(count),
+  }));
+}
+
 function invoiceMatchesScope(invoice: MemoryInvoice, scope: DashboardQueryScope): boolean {
   if (scope.organizationId && invoice.organizationId !== scope.organizationId) {
     return false;
@@ -1770,7 +2057,8 @@ function invoiceMatchesScope(invoice: MemoryInvoice, scope: DashboardQueryScope)
     invoice.createdById === scope.invoiceAccess.createdById ||
     invoice.assignedMemberId === scope.invoiceAccess.assignedMemberId ||
     (invoice.assignedTeamId !== null &&
-      scope.invoiceAccess.assignedTeamIds.includes(invoice.assignedTeamId))
+      scope.invoiceAccess.assignedTeamIds.includes(invoice.assignedTeamId)) ||
+    Boolean(scope.invoiceAccess.includeUnassigned && invoice.assignedTeamId === null)
   );
 }
 
@@ -1788,7 +2076,8 @@ function invoiceMatchesReportScope(invoice: MemoryInvoice, scope: ReportQuerySco
     invoice.createdById === scope.createdById ||
     invoice.assignedMemberId === scope.assignedMemberId ||
     (invoice.assignedTeamId !== null &&
-      (scope.assignedTeamIds ?? []).includes(invoice.assignedTeamId))
+      (scope.assignedTeamIds ?? []).includes(invoice.assignedTeamId)) ||
+    Boolean(scope.includeUnassigned && invoice.assignedTeamId === null)
   );
 }
 

@@ -1,7 +1,17 @@
 import type { InvoiceView } from "../../types/invoice.js";
 
+export interface InvoicePdfLogo {
+  body: Buffer;
+  contentType?: string;
+}
+
+export interface InvoicePdfRenderOptions {
+  logo?: InvoicePdfLogo | null;
+}
+
 export interface InvoicePdfContext {
   invoice: InvoiceView;
+  logo?: InvoicePdfLogo | null;
 }
 
 export interface InvoicePdfTemplate {

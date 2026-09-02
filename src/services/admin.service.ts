@@ -5,7 +5,6 @@ import { toAdminView } from "../lib/public-user.js";
 import { createInvitationToken, generateTemporaryPassword } from "../lib/temporary-credentials.js";
 import { findOrganizationById } from "../repositories/organization.repository.js";
 import { deleteSessionsByUserId } from "../repositories/session.repository.js";
-import { addTeamMember, countTeamAdmins, findTeamById } from "../repositories/team.repository.js";
 import {
   createUser,
   findAdminById,
@@ -46,7 +45,7 @@ export async function listAdminAccounts(
   const { items, total } = await listAdmins(query);
 
   return {
-    items: items.map(toAdminView),
+    items: items.map((item) => toAdminView(item)),
     page: query.page,
     pageSize: query.pageSize,
     total,
@@ -71,9 +70,8 @@ export async function createAdmin(
     email: string;
     firstName: string;
     lastName: string;
-    phone?: string;
+    phone?: string | null;
     organizationId?: string;
-    teamId?: string;
     temporaryPassword?: string;
     password?: string;
     status?: AccountStatus;
@@ -81,23 +79,7 @@ export async function createAdmin(
 ): Promise<{ user: AdminView; temporaryPassword: string | null; invitationToken: string }> {
   await requireSuperAdmin(actor);
 
-  let organizationId = input.organizationId;
-  if (input.teamId) {
-    const team = await findTeamById(input.teamId);
-    if (!team || !team.isActive) {
-      throw new NotFoundError("Team not found");
-    }
-    if (organizationId && organizationId !== team.organizationId) {
-      throw new ForbiddenError("Team does not belong to this company");
-    }
-    organizationId = team.organizationId;
-    const adminCount = await countTeamAdmins(team.id);
-    if (adminCount > 0) {
-      throw new ConflictError("This team already has an administrator");
-    }
-  }
-
-  const resolvedOrganizationId = await resolveManagedOrganizationId(actor, organizationId);
+  const resolvedOrganizationId = await resolveManagedOrganizationId(actor, input.organizationId);
   const organization = await requireOrganization(resolvedOrganizationId);
   const email = input.email.toLowerCase();
 
@@ -120,17 +102,13 @@ export async function createAdmin(
     passwordHash: await hashPassword(passwordToHash),
     firstName: input.firstName,
     lastName: input.lastName,
-    phone: null,
+    phone: input.phone ?? null,
     role: "ADMIN",
     status: input.status ?? "ACTIVE",
     organizationId: organization.id,
     passwordResetToken: invitation.tokenHash,
     passwordResetExpires: invitation.expiresAt,
   });
-
-  if (input.teamId) {
-    await addTeamMember(input.teamId, created.id);
-  }
 
   const admin = await findAdminById(created.id);
   if (!admin) {
@@ -143,7 +121,7 @@ export async function createAdmin(
     entity: "User",
     entityId: admin.id,
     organizationId: organization.id,
-    metadata: { email: admin.email, status: admin.status, teamId: input.teamId ?? null },
+    metadata: { email: admin.email, status: admin.status },
   });
 
   return {
@@ -162,6 +140,7 @@ export async function updateAdmin(
     email?: string;
     phone?: string | null;
     organizationId?: string;
+    teamIds?: string[];
     role?: unknown;
   },
 ): Promise<AdminView> {

@@ -1,4 +1,4 @@
-import type { CatalogKind, InvoiceStatus } from "@prisma/client";
+import type { CatalogKind, InvoiceEmailStatus, InvoiceStatus } from "@prisma/client";
 import type { AddressView, OrganizationSummary } from "./auth.js";
 import type { PaymentStatus } from "../lib/invoice-status.js";
 import type { PaymentView } from "./payment.js";
@@ -37,7 +37,6 @@ export interface InvoiceView {
   organizationId: string;
   customerId: string;
   createdById: string;
-  assignedTeamId: string | null;
   assignedMemberId: string | null;
   invoiceNumber: string;
   status: InvoiceStatus;
@@ -53,6 +52,9 @@ export interface InvoiceView {
   balanceDue: string;
   notes: string | null;
   terms: string | null;
+  shareUrl: string | null;
+  emailStatus: InvoiceEmailStatus;
+  emailSentAt: string | null;
   sentAt: string | null;
   viewedAt: string | null;
   organization: OrganizationSummary | null;
@@ -63,7 +65,6 @@ export interface InvoiceView {
     taxNumber: string | null;
   };
   createdBy: InvoiceUserSummary;
-  assignedTeam: InvoicePartySummary | null;
   assignedMember: InvoiceUserSummary | null;
   billingAddress: AddressView | null;
   shippingAddress: AddressView | null;

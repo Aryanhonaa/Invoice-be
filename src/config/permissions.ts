@@ -69,26 +69,6 @@ const ADMIN_ALLOWED: ReadonlySet<PermissionCode> = new Set([
   Permissions.USERS_CREATE,
   Permissions.USERS_UPDATE,
   Permissions.USERS_DELETE,
-  Permissions.TEAMS_VIEW,
-  Permissions.CUSTOMERS_VIEW,
-  Permissions.CUSTOMERS_CREATE,
-  Permissions.CUSTOMERS_UPDATE,
-  Permissions.PRODUCTS_VIEW,
-  Permissions.PRODUCTS_CREATE,
-  Permissions.PRODUCTS_UPDATE,
-  Permissions.INVOICES_VIEW,
-  Permissions.INVOICES_CREATE,
-  Permissions.INVOICES_UPDATE,
-  Permissions.INVOICES_SEND,
-  Permissions.QUOTES_VIEW,
-  Permissions.QUOTES_CREATE,
-  Permissions.QUOTES_UPDATE,
-  Permissions.PAYMENTS_VIEW,
-  Permissions.PAYMENTS_CREATE,
-  Permissions.PAYMENTS_UPDATE,
-  Permissions.EXPENSES_VIEW,
-  Permissions.EXPENSES_CREATE,
-  Permissions.EXPENSES_UPDATE,
   Permissions.REPORTS_VIEW,
   Permissions.SETTINGS_VIEW,
   Permissions.SETTINGS_UPDATE,
@@ -96,7 +76,6 @@ const ADMIN_ALLOWED: ReadonlySet<PermissionCode> = new Set([
 
 const MEMBER_ALLOWED: ReadonlySet<PermissionCode> = new Set([
   Permissions.USERS_VIEW,
-  Permissions.TEAMS_VIEW,
   Permissions.CUSTOMERS_VIEW,
   Permissions.CUSTOMERS_CREATE,
   Permissions.CUSTOMERS_UPDATE,
@@ -119,8 +98,12 @@ const MEMBER_ALLOWED: ReadonlySet<PermissionCode> = new Set([
   Permissions.SETTINGS_VIEW,
 ]);
 
+const SUPER_ADMIN_DENIED: ReadonlySet<PermissionCode> = new Set([
+  Permissions.USERS_CREATE,
+]);
+
 export const ROLE_PERMISSIONS: Record<UserRoleName, PermissionCode[]> = {
-  SUPER_ADMIN: [...ALL_PERMISSION_CODES],
+  SUPER_ADMIN: ALL_PERMISSION_CODES.filter((code) => !SUPER_ADMIN_DENIED.has(code)),
   ADMIN: ALL_PERMISSION_CODES.filter((code) => ADMIN_ALLOWED.has(code)),
   MEMBER: ALL_PERMISSION_CODES.filter((code) => MEMBER_ALLOWED.has(code)),
 };

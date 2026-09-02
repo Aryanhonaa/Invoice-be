@@ -4,6 +4,7 @@ import {
   createMember,
   getMemberAccount,
   listMemberAccounts,
+  resetMemberPassword,
   updateMember,
   updateMemberStatus,
 } from "../services/member.service.js";
@@ -49,8 +50,15 @@ export async function updateMemberController(req: Request, res: Response): Promi
   const actor = requireActor(req);
   const params = validate(uuidParamSchema, req.params);
   const body = validate(updateMemberSchema, req.body);
-  const user = await updateMember(actor, params.id, body);
-  res.status(200).json(success({ user }));
+  const result = await updateMember(actor, params.id, body);
+  res.status(200).json(success(result));
+}
+
+export async function resetMemberPasswordController(req: Request, res: Response): Promise<void> {
+  const actor = requireActor(req);
+  const params = validate(uuidParamSchema, req.params);
+  const result = await resetMemberPassword(actor, params.id);
+  res.status(200).json(success(result));
 }
 
 export async function updateMemberStatusController(req: Request, res: Response): Promise<void> {

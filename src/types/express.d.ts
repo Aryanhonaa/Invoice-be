@@ -1,10 +1,9 @@
-import type { AuthUser, TeamRecord } from "./auth.js";
+import type { AuthUser } from "./auth.js";
 
 declare global {
   namespace Express {
     interface Request {
       authUser?: AuthUser;
-      authorizedTeam?: TeamRecord;
     }
   }
 }

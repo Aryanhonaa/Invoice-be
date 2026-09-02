@@ -8,7 +8,7 @@ export default tseslint.config(
     ignores: ["dist/**", "node_modules/**", "coverage/**"],
   },
   {
-    files: ["src/**/*.ts", "tests/**/*.ts", "prisma/seed.ts"],
+    files: ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "prisma/seed.ts"],
     languageOptions: {
       parserOptions: {
         projectService: true,

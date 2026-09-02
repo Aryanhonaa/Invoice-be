@@ -1,5 +1,5 @@
 import { ForbiddenError, ValidationError } from "../lib/errors.js";
-import { getSoleOrganizationId } from "../repositories/organization.repository.js";
+import { getDefaultOrganizationId } from "../repositories/organization.repository.js";
 import type { AuthUser } from "../types/auth.js";
 
 export async function resolveManagedOrganizationId(
@@ -10,11 +10,11 @@ export async function resolveManagedOrganizationId(
     if (requested) {
       return requested;
     }
-    const sole = await getSoleOrganizationId();
-    if (sole) {
-      return sole;
+    const fallback = await getDefaultOrganizationId();
+    if (fallback) {
+      return fallback;
     }
-    throw new ValidationError("organizationId is required");
+    throw new ValidationError("No company is set up yet");
   }
 
   if (actor.organizationId) {
@@ -63,11 +63,11 @@ export async function scopedTenantOrganizationId(
     if (requested) {
       return requested;
     }
-    const sole = await getSoleOrganizationId();
-    if (sole) {
-      return sole;
+    const fallback = await getDefaultOrganizationId();
+    if (fallback) {
+      return fallback;
     }
-    throw new ValidationError("organizationId is required");
+    throw new ValidationError("No company is set up yet");
   }
 
   return scopedOrganizationFilter(actor, requested);

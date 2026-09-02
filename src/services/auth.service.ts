@@ -1,8 +1,25 @@
 import { getSessionExpiry } from "../config/auth.js";
-import { AccountInactiveError, ConflictError, UnauthorizedError } from "../lib/errors.js";
-import { hashPassword, verifyPasswordTimingSafe } from "../lib/password.js";
+import {
+  AccountInactiveError,
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+  ServiceUnavailableError,
+  UnauthorizedError,
+  ValidationError,
+} from "../lib/errors.js";
+import { hashPassword, verifyPassword, verifyPasswordTimingSafe } from "../lib/password.js";
 import { toPublicUser } from "../lib/public-user.js";
 import { createSessionToken, hashSessionToken } from "../lib/session-token.js";
+import { isR2Configured } from "../integrations/storage/r2.client.js";
+import {
+  assertLogoUploadMeta,
+  createPresignedDownloadUrl,
+  createPresignedUploadUrl,
+  deleteObject,
+  headObject,
+} from "../integrations/storage/r2.service.js";
+import { randomUUID } from "node:crypto";
 import {
   createSession,
   deleteSessionByTokenHash,
@@ -29,6 +46,37 @@ async function assertActiveOrganization(organizationId: string | null): Promise<
   if (!organization || !organization.isActive) {
     throw new AccountInactiveError("This organization is inactive");
   }
+}
+
+async function withAvatar(user: UserRecord): Promise<PublicUser> {
+  let avatarUrl: string | null = null;
+  if (user.avatarObjectKey && isR2Configured()) {
+    try {
+      avatarUrl = await createPresignedDownloadUrl({
+        key: user.avatarObjectKey,
+        expiresInSeconds: 60 * 30,
+      });
+    } catch {
+      avatarUrl = null;
+    }
+  }
+  return toPublicUser(user, avatarUrl);
+}
+
+function buildAvatarKey(userId: string, contentType: string): string {
+  const ext =
+    contentType === "image/png"
+      ? "png"
+      : contentType === "image/webp"
+        ? "webp"
+        : contentType === "image/svg+xml"
+          ? "svg"
+          : "jpg";
+  return `users/${userId}/avatar/${randomUUID()}.${ext}`;
+}
+
+function isAvatarKey(userId: string, key: string): boolean {
+  return key.startsWith(`users/${userId}/avatar/`);
 }
 
 export async function login(input: {
@@ -82,7 +130,7 @@ export async function login(input: {
     userAgent: input.userAgent,
   });
 
-  return { user: toPublicUser(updated), token };
+  return { user: await withAvatar(updated), token };
 }
 
 export async function logout(input: {
@@ -116,7 +164,144 @@ export async function getAuthenticatedUser(userId: string): Promise<PublicUser> 
 
   await assertActiveOrganization(user.organizationId);
 
-  return toPublicUser(user);
+  return withAvatar(user);
+}
+
+export async function updateProfile(
+  actorId: string,
+  input: { firstName: string; lastName: string; phone?: string | null },
+): Promise<PublicUser> {
+  const user = await findUserById(actorId);
+  if (!user) {
+    throw new NotFoundError("User not found");
+  }
+
+  const updated = await updateUser(actorId, {
+    firstName: input.firstName.trim(),
+    lastName: input.lastName.trim(),
+    phone: input.phone?.trim() || null,
+  });
+
+  await recordAudit({
+    actorId,
+    action: "PROFILE_UPDATED",
+    entity: "User",
+    entityId: actorId,
+    organizationId: updated.organizationId,
+  });
+
+  return withAvatar(updated);
+}
+
+export async function changePassword(
+  actorId: string,
+  input: { currentPassword: string; newPassword: string },
+): Promise<void> {
+  const user = await findUserById(actorId);
+  if (!user) {
+    throw new NotFoundError("User not found");
+  }
+
+  const valid = await verifyPassword(input.currentPassword, user.passwordHash);
+  if (!valid) {
+    throw new ForbiddenError("Current password is incorrect");
+  }
+
+  if (input.newPassword.length < 8) {
+    throw new ValidationError("New password must be at least 8 characters");
+  }
+
+  await updateUser(actorId, { passwordHash: await hashPassword(input.newPassword) });
+
+  await recordAudit({
+    actorId,
+    action: "PASSWORD_CHANGED",
+    entity: "User",
+    entityId: actorId,
+    organizationId: user.organizationId,
+  });
+}
+
+export async function createAvatarUploadUrl(
+  actorId: string,
+  input: { contentType: string; contentLength: number },
+): Promise<{ uploadUrl: string; objectKey: string; expiresInSeconds: number }> {
+  if (!isR2Configured()) {
+    throw new ServiceUnavailableError("File storage is not configured yet.", "R2_NOT_CONFIGURED");
+  }
+  assertLogoUploadMeta(input);
+  const objectKey = buildAvatarKey(actorId, input.contentType);
+  const expiresInSeconds = 60 * 5;
+  const uploadUrl = await createPresignedUploadUrl({
+    key: objectKey,
+    contentType: input.contentType,
+    expiresInSeconds,
+  });
+  return { uploadUrl, objectKey, expiresInSeconds };
+}
+
+export async function confirmAvatarUpload(
+  actorId: string,
+  input: { objectKey: string; contentType: string },
+): Promise<PublicUser> {
+  if (!isR2Configured()) {
+    throw new ServiceUnavailableError("File storage is not configured yet.", "R2_NOT_CONFIGURED");
+  }
+  const user = await findUserById(actorId);
+  if (!user) {
+    throw new NotFoundError("User not found");
+  }
+  if (!isAvatarKey(actorId, input.objectKey)) {
+    throw new ValidationError("Invalid avatar upload key");
+  }
+  assertLogoUploadMeta({ contentType: input.contentType, contentLength: 1 });
+  const head = await headObject(input.objectKey);
+  if (!head) {
+    throw new ValidationError("Avatar upload was not found. Please try again.");
+  }
+  if (head.contentLength !== undefined) {
+    assertLogoUploadMeta({
+      contentType: input.contentType,
+      contentLength: head.contentLength,
+    });
+  }
+
+  const previous = user.avatarObjectKey;
+  const updated = await updateUser(actorId, { avatarObjectKey: input.objectKey });
+  if (previous && previous !== input.objectKey) {
+    try {
+      await deleteObject(previous);
+    } catch {
+      // best effort
+    }
+  }
+
+  await recordAudit({
+    actorId,
+    action: "AVATAR_UPDATED",
+    entity: "User",
+    entityId: actorId,
+    organizationId: updated.organizationId,
+  });
+
+  return withAvatar(updated);
+}
+
+export async function removeAvatar(actorId: string): Promise<PublicUser> {
+  const user = await findUserById(actorId);
+  if (!user) {
+    throw new NotFoundError("User not found");
+  }
+  const previous = user.avatarObjectKey;
+  const updated = await updateUser(actorId, { avatarObjectKey: null });
+  if (previous && isR2Configured()) {
+    try {
+      await deleteObject(previous);
+    } catch {
+      // best effort
+    }
+  }
+  return withAvatar(updated);
 }
 
 export async function resolveSessionUser(token: string | undefined): Promise<UserRecord> {

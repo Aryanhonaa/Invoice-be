@@ -1,4 +1,5 @@
 import { Permissions } from "../config/permissions.js";
+import { assertCustomerScope, resolveAdministratorId } from "../lib/admin-scope.js";
 import { ConflictError, ForbiddenError, NotFoundError } from "../lib/errors.js";
 import { toCustomerView } from "../lib/customer-view.js";
 import { findOrganizationById } from "../repositories/organization.repository.js";
@@ -7,6 +8,7 @@ import {
   createCustomer,
   deleteCustomer,
   findCustomerById,
+  findLatestUnsentInvoicesByCustomerIds,
   listCustomers,
   updateCustomer,
 } from "../repositories/customer.repository.js";
@@ -22,31 +24,56 @@ function canDeleteCustomers(actor: AuthUser): boolean {
   return actor.permissions.includes(Permissions.CUSTOMERS_DELETE);
 }
 
+async function mapCustomersWithLifecycle(
+  records: Awaited<ReturnType<typeof listCustomers>>["items"],
+): Promise<CustomerView[]> {
+  const unsentMap = await findLatestUnsentInvoicesByCustomerIds(records.map((item) => item.id));
+  return records.map((customer) => {
+    const hasSuccessfullySentInvoice = customer._count.invoices > 0;
+    return toCustomerView(customer, {
+      // Only NEW customers get the unsent-invoice hint (never successfully emailed).
+      unsentInvoice: hasSuccessfullySentInvoice ? null : (unsentMap.get(customer.id) ?? null),
+    });
+  });
+}
+
 export async function listCustomerAccounts(
   actor: AuthUser,
   query: {
     search?: string;
     status?: "ACTIVE" | "INACTIVE";
     organizationId?: string;
+    invoiceLifecycle?: "NEW" | "OLD";
     page: number;
     pageSize: number;
   },
-): Promise<{ items: CustomerView[]; page: number; pageSize: number; total: number; totalPages: number }> {
+): Promise<{
+  items: CustomerView[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  counts: { all: number; new: number; old: number };
+}> {
   const organizationId = await scopedTenantOrganizationId(actor, query.organizationId);
-  const { items, total } = await listCustomers({
+  const administratorId = await resolveAdministratorId(actor);
+  const { items, total, counts } = await listCustomers({
     search: query.search,
     isActive: query.status === undefined ? undefined : query.status === "ACTIVE",
     organizationId,
+    administratorId: administratorId ?? undefined,
+    invoiceLifecycle: query.invoiceLifecycle,
     page: query.page,
     pageSize: query.pageSize,
   });
 
   return {
-    items: items.map(toCustomerView),
+    items: await mapCustomersWithLifecycle(items),
     page: query.page,
     pageSize: query.pageSize,
     total,
     totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
+    counts,
   };
 }
 
@@ -56,7 +83,12 @@ export async function getCustomerAccount(actor: AuthUser, id: string): Promise<C
     throw new NotFoundError("Customer not found");
   }
   assertOrganizationAccess(actor, customer.organizationId);
-  return toCustomerView(customer);
+  await assertCustomerScope(actor, customer);
+  const unsentMap = await findLatestUnsentInvoicesByCustomerIds([customer.id]);
+  const hasSuccessfullySentInvoice = customer._count.invoices > 0;
+  return toCustomerView(customer, {
+    unsentInvoice: hasSuccessfullySentInvoice ? null : (unsentMap.get(customer.id) ?? null),
+  });
 }
 
 export async function createCustomerAccount(
@@ -80,8 +112,14 @@ export async function createCustomerAccount(
     throw new NotFoundError("Organization not found");
   }
 
+  const administratorId = await resolveAdministratorId(actor);
+  if (actor.role === "MEMBER" && !administratorId) {
+    throw new ForbiddenError("Your account is not linked to an administrator");
+  }
+
   const customer = await createCustomer({
     organizationId,
+    administratorId,
     name: input.name,
     company: input.company,
     email: input.email,
@@ -102,7 +140,7 @@ export async function createCustomerAccount(
     metadata: { name: customer.name },
   });
 
-  return toCustomerView(customer);
+  return toCustomerView(customer, { unsentInvoice: null });
 }
 
 export async function updateCustomerAccount(
@@ -125,8 +163,10 @@ export async function updateCustomerAccount(
     throw new NotFoundError("Customer not found");
   }
   assertOrganizationAccess(actor, customer.organizationId);
+  await assertCustomerScope(actor, customer);
 
   const updated = await updateCustomer(customer.id, input);
+  const unsentMap = await findLatestUnsentInvoicesByCustomerIds([updated.id]);
 
   await recordAudit({
     actorId: actor.id,
@@ -137,7 +177,9 @@ export async function updateCustomerAccount(
     metadata: { name: updated.name },
   });
 
-  return toCustomerView(updated);
+  return toCustomerView(updated, {
+    unsentInvoice: updated._count.invoices > 0 ? null : (unsentMap.get(updated.id) ?? null),
+  });
 }
 
 export async function deleteCustomerAccount(actor: AuthUser, id: string): Promise<void> {
@@ -150,6 +192,7 @@ export async function deleteCustomerAccount(actor: AuthUser, id: string): Promis
     throw new NotFoundError("Customer not found");
   }
   assertOrganizationAccess(actor, customer.organizationId);
+  await assertCustomerScope(actor, customer);
 
   const documents = await countCustomerDocuments(customer.id);
   if (documents > 0) {

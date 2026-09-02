@@ -12,7 +12,6 @@ export const createMemberSchema = z
     firstName: z.string().trim().min(1),
     lastName: z.string().trim().min(1),
     organizationId: z.string().uuid().optional(),
-    teamIds: z.array(z.string().uuid()).optional(),
     temporaryPassword: z.string().min(8).optional(),
     password: z.string().min(8).optional(),
     status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
@@ -24,6 +23,8 @@ export const updateMemberSchema = z
     email: emailField.optional(),
     firstName: z.string().trim().min(1).optional(),
     lastName: z.string().trim().min(1).optional(),
+    temporaryPassword: z.string().min(8).optional(),
+    password: z.string().min(8).optional(),
   })
   .strict();
 
@@ -37,7 +38,7 @@ export const listMembersQuerySchema = z.object({
   search: z.string().trim().min(1).optional(),
   status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
   organizationId: z.string().uuid().optional(),
-  teamId: z.string().uuid().optional(),
+  administratorId: z.string().uuid().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(50).default(10),
 });

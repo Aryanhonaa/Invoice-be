@@ -40,6 +40,13 @@ vi.mock("../src/repositories/audit.repository.js", async () => {
 vi.mock("../src/repositories/health.repository.js", () => ({
   checkDatabaseConnection: vi.fn().mockResolvedValue(true),
 }));
+vi.mock("../src/integrations/email/provider.js", () => ({
+  getEmailProvider: () => ({
+    name: "test",
+    isConfigured: () => true,
+    sendInvoiceEmail: async () => ({ sent: true, provider: "test" }),
+  }),
+}));
 
 import { app } from "../src/app.js";
 import { hashPassword } from "../src/lib/password.js";
@@ -110,12 +117,12 @@ describe("payments", () => {
     const customerA = await request(app)
       .post("/api/customers")
       .set("Cookie", cookiesA)
-      .send({ name: "Acme Buyer" });
+      .send({ name: "Acme Buyer", email: "acme@example.com" });
     const cookiesB = await loginAs("member-b@example.com");
     const customerB = await request(app)
       .post("/api/customers")
       .set("Cookie", cookiesB)
-      .send({ name: "Beta Buyer" });
+      .send({ name: "Beta Buyer", email: "beta@example.com" });
 
     const invoiceA = await request(app)
       .post("/api/invoices")

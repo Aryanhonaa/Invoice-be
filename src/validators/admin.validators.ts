@@ -11,8 +11,8 @@ export const createAdminSchema = z
     email: emailField,
     firstName: z.string().trim().min(1),
     lastName: z.string().trim().min(1),
+    phone: z.string().trim().min(1).optional(),
     organizationId: z.string().uuid().optional(),
-    teamId: z.string().uuid().optional(),
     temporaryPassword: z.string().min(8).optional(),
     password: z.string().min(8).optional(),
     status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
@@ -24,6 +24,7 @@ export const updateAdminSchema = z
     email: emailField.optional(),
     firstName: z.string().trim().min(1).optional(),
     lastName: z.string().trim().min(1).optional(),
+    phone: z.string().trim().min(1).nullable().optional(),
   })
   .strict();
 

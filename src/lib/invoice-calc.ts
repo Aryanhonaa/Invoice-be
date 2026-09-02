@@ -3,8 +3,6 @@ import { money, moneyString, roundMoney } from "./money.js";
 export interface InvoiceLineInput {
   quantity: string;
   unitPrice: string;
-  discount?: string;
-  taxRate?: string;
 }
 
 export interface InvoiceLineTotals {
@@ -25,27 +23,21 @@ export interface InvoiceTotals {
 export function calculateInvoiceLine(input: InvoiceLineInput): InvoiceLineTotals {
   const quantity = money(input.quantity);
   const unitPrice = money(input.unitPrice);
-  const discount = money(input.discount ?? "0");
-  const taxRate = money(input.taxRate ?? "0");
 
-  if (quantity.lt(0) || unitPrice.lt(0) || discount.lt(0) || taxRate.lt(0)) {
-    throw new Error("Invoice amounts cannot be negative");
+  if (quantity.lte(0)) {
+    throw new Error("Quantity must be greater than 0");
   }
-  if (taxRate.gt(100)) {
-    throw new Error("Tax rate cannot exceed 100");
+  if (unitPrice.lt(0)) {
+    throw new Error("Unit price cannot be negative");
   }
 
   const lineSubtotal = roundMoney(quantity.times(unitPrice));
-  const discountAmount = roundMoney(discount.gt(lineSubtotal) ? lineSubtotal : discount);
-  const taxable = roundMoney(lineSubtotal.minus(discountAmount));
-  const taxAmount = roundMoney(taxable.times(taxRate).dividedBy(100));
-  const lineTotal = roundMoney(taxable.plus(taxAmount));
 
   return {
     lineSubtotal: moneyString(lineSubtotal),
-    discountAmount: moneyString(discountAmount),
-    taxAmount: moneyString(taxAmount),
-    lineTotal: moneyString(lineTotal),
+    discountAmount: "0.0000",
+    taxAmount: "0.0000",
+    lineTotal: moneyString(lineSubtotal),
   };
 }
 
@@ -56,15 +48,13 @@ export function calculateInvoiceTotals(lines: InvoiceLineInput[]): InvoiceTotals
 
   const calculated = lines.map(calculateInvoiceLine);
   const subtotal = calculated.reduce((sum, line) => sum.plus(line.lineSubtotal), money(0));
-  const discountAmount = calculated.reduce((sum, line) => sum.plus(line.discountAmount), money(0));
-  const taxAmount = calculated.reduce((sum, line) => sum.plus(line.taxAmount), money(0));
-  const total = calculated.reduce((sum, line) => sum.plus(line.lineTotal), money(0));
+  const subtotalValue = moneyString(subtotal);
 
   return {
-    subtotal: moneyString(subtotal),
-    discountAmount: moneyString(discountAmount),
-    taxAmount: moneyString(taxAmount),
-    total: moneyString(total),
+    subtotal: subtotalValue,
+    discountAmount: "0.0000",
+    taxAmount: "0.0000",
+    total: subtotalValue,
     lines: calculated,
   };
 }

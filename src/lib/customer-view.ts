@@ -1,5 +1,10 @@
 import type { Address, Customer, Organization } from "@prisma/client";
-import type { AddressView, CustomerView, OrganizationSummary } from "../types/auth.js";
+import type {
+  AddressView,
+  CustomerUnsentInvoiceSummary,
+  CustomerView,
+  OrganizationSummary,
+} from "../types/auth.js";
 
 function toOrganizationSummary(organization: Organization | null): OrganizationSummary | null {
   if (!organization) {
@@ -33,8 +38,13 @@ export function toCustomerView(
     billingAddress: Address | null;
     shippingAddress: Address | null;
     organization: Organization | null;
+    _count?: { invoices: number };
+  },
+  options?: {
+    unsentInvoice?: CustomerUnsentInvoiceSummary | null;
   },
 ): CustomerView {
+  const sentCount = customer._count?.invoices ?? 0;
   return {
     id: customer.id,
     organizationId: customer.organizationId,
@@ -45,6 +55,8 @@ export function toCustomerView(
     taxNumber: customer.taxNumber,
     notes: customer.notes,
     isActive: customer.isActive,
+    invoiceLifecycleStatus: sentCount > 0 ? "OLD" : "NEW",
+    unsentInvoice: options?.unsentInvoice ?? null,
     billingAddress: toAddressView(customer.billingAddress),
     shippingAddress: toAddressView(customer.shippingAddress),
     organization: toOrganizationSummary(customer.organization),

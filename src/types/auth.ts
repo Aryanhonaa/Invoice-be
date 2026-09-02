@@ -18,6 +18,7 @@ export interface PublicUser {
   firstName: string;
   lastName: string;
   phone: string | null;
+  avatarUrl: string | null;
   role: UserRole;
   status: AccountStatus;
   organizationId: string | null;
@@ -32,10 +33,19 @@ export interface OrganizationSummary {
   name: string;
   slug: string;
   isActive: boolean;
+  logoUrl?: string | null;
+}
+
+export interface AdministratorSummary {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
 }
 
 export interface AdminView extends PublicUser {
   organization: OrganizationSummary | null;
+  memberCount: number;
 }
 
 export interface UserRecord {
@@ -45,9 +55,11 @@ export interface UserRecord {
   firstName: string;
   lastName: string;
   phone: string | null;
+  avatarObjectKey: string | null;
   role: UserRole;
   status: AccountStatus;
   organizationId: string | null;
+  administratorId: string | null;
   lastLoginAt: Date | null;
   passwordResetToken: string | null;
   passwordResetExpires: Date | null;
@@ -57,6 +69,14 @@ export interface UserRecord {
 
 export interface AdminRecord extends UserRecord {
   organization: OrganizationRecord | null;
+  managedMembers?: Array<{
+    id: string;
+    firstName: string;
+    lastName: string;
+    email: string;
+    status: AccountStatus;
+  }>;
+  _count?: { managedMembers: number };
 }
 
 export interface SessionRecord {
@@ -74,42 +94,15 @@ export interface OrganizationRecord {
   id: string;
   name: string;
   slug: string;
+  logoObjectKey: string | null;
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
-}
-
-export interface TeamRecord {
-  id: string;
-  organizationId: string;
-  name: string;
-  description: string | null;
-  isActive: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface TeamView {
-  id: string;
-  organizationId: string;
-  name: string;
-  description: string | null;
-  isActive: boolean;
-  memberCount: number;
-  organization: OrganizationSummary | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface MemberTeamSummary {
-  id: string;
-  name: string;
-  isActive: boolean;
 }
 
 export interface MemberView extends PublicUser {
   organization: OrganizationSummary | null;
-  teams: MemberTeamSummary[];
+  administrator: AdministratorSummary | null;
 }
 
 export type CatalogKind = "PRODUCT" | "SERVICE";
@@ -133,6 +126,12 @@ export interface AddressInput {
   country: string;
 }
 
+export interface CustomerUnsentInvoiceSummary {
+  id: string;
+  invoiceNumber: string;
+  emailStatus: "NOT_SENT" | "FAILED";
+}
+
 export interface CustomerView {
   id: string;
   organizationId: string;
@@ -143,6 +142,8 @@ export interface CustomerView {
   taxNumber: string | null;
   notes: string | null;
   isActive: boolean;
+  invoiceLifecycleStatus: "NEW" | "OLD";
+  unsentInvoice: CustomerUnsentInvoiceSummary | null;
   billingAddress: AddressView | null;
   shippingAddress: AddressView | null;
   organization: OrganizationSummary | null;

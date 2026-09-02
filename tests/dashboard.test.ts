@@ -44,6 +44,13 @@ vi.mock("../src/repositories/audit.repository.js", async () => {
 vi.mock("../src/repositories/health.repository.js", () => ({
   checkDatabaseConnection: vi.fn().mockResolvedValue(true),
 }));
+vi.mock("../src/integrations/email/provider.js", () => ({
+  getEmailProvider: () => ({
+    name: "test",
+    isConfigured: () => true,
+    sendInvoiceEmail: async () => ({ sent: true, provider: "test" }),
+  }),
+}));
 
 import { app } from "../src/app.js";
 import { hashPassword } from "../src/lib/password.js";
@@ -76,11 +83,10 @@ describe("dashboard", () => {
     const db = getTestDb();
     const orgA = seedOrganization(db, { name: "Org A", slug: "org-a" });
     const orgB = seedOrganization(db, { name: "Org B", slug: "org-b" });
-    const teamA = seedTeam(db, { organizationId: orgA.id, name: "Sales" });
     const passwordHash = await hashPassword(password);
 
     seedUser(db, { email: "super@example.com", passwordHash, role: "SUPER_ADMIN" });
-    seedUser(db, {
+    const adminA = seedUser(db, {
       email: "admin-a@example.com",
       passwordHash,
       role: "ADMIN",
@@ -92,6 +98,7 @@ describe("dashboard", () => {
       role: "ADMIN",
       organizationId: orgB.id,
     });
+    const teamA = seedTeam(db, { organizationId: orgA.id, name: "Sales", createdById: adminA.id });
     const memberA = seedUser(db, {
       email: "member-a@example.com",
       passwordHash,
@@ -111,6 +118,7 @@ describe("dashboard", () => {
       organizationId: orgB.id,
     });
     db.teamMembers.push({ teamId: teamA.id, userId: memberA.id });
+    db.teamMembers.push({ teamId: teamA.id, userId: adminA.id });
 
     const operatorA = await loginAs("member-a@example.com");
     const operatorB = await loginAs("member-b@example.com");
@@ -119,11 +127,11 @@ describe("dashboard", () => {
     const customerA = await request(app)
       .post("/api/customers")
       .set("Cookie", operatorA)
-      .send({ name: "Acme Buyer" });
+      .send({ name: "Acme Buyer", email: "acme@example.com" });
     const customerB = await request(app)
       .post("/api/customers")
       .set("Cookie", operatorB)
-      .send({ name: "Beta Buyer" });
+      .send({ name: "Beta Buyer", email: "beta@example.com" });
 
     const invoiceA = await request(app)
       .post("/api/invoices")
@@ -189,21 +197,21 @@ describe("dashboard", () => {
     expect(system.body.data.dashboard.metrics.admins).toBe(2);
     expect(system.body.data.dashboard.metrics.members).toBe(3);
     expect(system.body.data.dashboard.metrics.invoices).toBe(3);
-    expect(system.body.data.dashboard.metrics.revenue).toBe("0.0000");
+    expect(system.body.data.dashboard.metrics.revenue).toBe("340.0000");
     expect(system.body.data.dashboard.metrics.activeOrganizations).toBe(2);
     expect(system.body.data.dashboard.metrics.overdueInvoices).toBe(1);
-    expect(system.body.data.dashboard.recentInvoices).toEqual([]);
-    expect(system.body.data.dashboard.recentPayments).toEqual([]);
-    expect(system.body.data.dashboard.overdueInvoices).toEqual([]);
+    expect(system.body.data.dashboard.recentInvoices).toHaveLength(3);
+    expect(system.body.data.dashboard.recentPayments).toHaveLength(2);
+    expect(system.body.data.dashboard.overdueInvoices).toHaveLength(1);
 
     const scoped = await request(app)
       .get(`/api/dashboard?organizationId=${orgA.id}&preset=custom&dateFrom=2026-01-01&dateTo=2026-12-31`)
       .set("Cookie", superCookies);
     expect(scoped.status).toBe(200);
-    expect(scoped.body.data.dashboard.scope).toBe("SYSTEM");
-    expect(scoped.body.data.dashboard.organizationId).toBeNull();
-    expect(scoped.body.data.dashboard.metrics.invoices).toBe(3);
-    expect(scoped.body.data.dashboard.metrics.revenue).toBe("0.0000");
+    expect(scoped.body.data.dashboard.scope).toBe("ORGANIZATION");
+    expect(scoped.body.data.dashboard.organizationId).toBe(orgA.id);
+    expect(scoped.body.data.dashboard.metrics.invoices).toBe(2);
+    expect(scoped.body.data.dashboard.metrics.revenue).toBe("40.0000");
   });
 
   it("keeps Admin dashboards isolated by organization", async () => {
@@ -300,8 +308,10 @@ describe("dashboard", () => {
     expect(august.body.data.dashboard.metrics.invoices).toBe(2);
     expect(august.body.data.dashboard.metrics.overdueInvoices).toBe(0);
     expect(august.body.data.dashboard.metrics.revenue).toBe("0.0000");
-    expect(august.body.data.dashboard.expenseSeries).toEqual([]);
-    expect(august.body.data.dashboard.topCustomers).toEqual([]);
+    expect(
+      august.body.data.dashboard.expenseSeries.every((point: { amount: string }) => point.amount === "0.0000"),
+    ).toBe(true);
+    expect(august.body.data.dashboard.topCustomers).toHaveLength(2);
   });
 
   it("rejects unauthenticated dashboard access", async () => {

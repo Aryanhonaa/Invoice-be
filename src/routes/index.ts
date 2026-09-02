@@ -10,7 +10,8 @@ import { invoiceRouter } from "./invoice.routes.js";
 import { memberRouter } from "./member.routes.js";
 import { paymentRouter } from "./payment.routes.js";
 import { productRouter } from "./product.routes.js";
-import { teamRouter } from "./team.routes.js";
+import { publicInvoiceRouter } from "./public-invoice.routes.js";
+import { settingsRouter } from "./settings.routes.js";
 
 const apiRouter = Router();
 
@@ -22,9 +23,10 @@ apiRouter.use("/auth", authRouter);
 apiRouter.use("/admins", adminRouter);
 apiRouter.use("/members", memberRouter);
 apiRouter.use("/customers", customerRouter);
+apiRouter.use("/public/invoices", publicInvoiceRouter);
 apiRouter.use("/invoices", invoiceRouter);
 apiRouter.use("/payments", paymentRouter);
 apiRouter.use("/products", productRouter);
-apiRouter.use("/teams", teamRouter);
+apiRouter.use("/settings", settingsRouter);
 
 export { apiRouter };

@@ -2,6 +2,7 @@ import type { PaymentMethod } from "@prisma/client";
 import { PaymentProviderFactory } from "../integrations/payments/provider-factory.js";
 import { PaymentProviderName } from "../integrations/payments/types.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../lib/errors.js";
+import { resolveInvoiceUserScope } from "../lib/admin-scope.js";
 import { assertInvoiceAccess } from "../lib/invoice-access.js";
 import { canRecordPayment, deriveInvoiceStatus } from "../lib/invoice-status.js";
 import { toInvoiceView } from "../lib/invoice-view.js";
@@ -15,12 +16,10 @@ import {
   listPayments,
   recordCompletedPaymentAndSettleInvoice,
 } from "../repositories/payment.repository.js";
-import { listTeamsForUser } from "../repositories/team.repository.js";
 import type { AuthUser } from "../types/auth.js";
 import type { InvoiceView } from "../types/invoice.js";
 import type { PaymentView } from "../types/payment.js";
 import { scopedTenantOrganizationId } from "../utils/organization-scope.js";
-import { resolveTeamScope } from "../utils/team-scope.js";
 import { recordAudit } from "./audit.service.js";
 
 export interface RecordManualPaymentInput {
@@ -122,7 +121,6 @@ export async function listPaymentRecords(
     customerId?: string;
     invoiceId?: string;
     organizationId?: string;
-    teamId?: string;
     dateFrom?: string;
     dateTo?: string;
     page: number;
@@ -130,18 +128,7 @@ export async function listPaymentRecords(
   },
 ): Promise<{ items: PaymentView[]; page: number; pageSize: number; total: number; totalPages: number }> {
   const organizationId = await scopedTenantOrganizationId(actor, query.organizationId);
-  const { teamId } = await resolveTeamScope(actor, {
-    organizationId,
-    teamId: query.teamId,
-  });
-  const invoiceAccess =
-    actor.role === "MEMBER" && !teamId
-      ? {
-          createdById: actor.id,
-          assignedMemberId: actor.id,
-          assignedTeamIds: (await listTeamsForUser(actor.id)).map((team) => team.id),
-        }
-      : undefined;
+  const userScope = await resolveInvoiceUserScope(actor);
 
   if (actor.role === "MEMBER" && query.invoiceId) {
     const invoice = await findInvoiceById(query.invoiceId);
@@ -161,8 +148,7 @@ export async function listPaymentRecords(
     customerId: query.customerId,
     invoiceId: query.invoiceId,
     organizationId,
-    invoiceAccess,
-    assignedTeamId: teamId ?? undefined,
+    userIds: userScope?.userIds,
     dateFrom: query.dateFrom ? parseDateValue(query.dateFrom, "dateFrom") : undefined,
     dateTo: query.dateTo ? parseDateValue(query.dateTo, "dateTo") : undefined,
     page: query.page,

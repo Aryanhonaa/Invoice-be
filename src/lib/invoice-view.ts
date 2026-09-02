@@ -4,7 +4,6 @@ import type {
   Invoice,
   InvoiceItem,
   Organization,
-  Team,
   User,
 } from "@prisma/client";
 import { calculateInvoiceLine } from "./invoice-calc.js";
@@ -12,13 +11,13 @@ import { deriveInvoiceStatus, derivePaymentStatus } from "./invoice-status.js";
 import { money, moneyString } from "./money.js";
 import { toAddressView } from "./customer-view.js";
 import { toPaymentView, type PaymentRecord } from "./payment-view.js";
+import { invoiceShareUrl } from "./invoice-share.js";
 import type { InvoiceItemView, InvoiceView } from "../types/invoice.js";
 
 export type InvoiceRecord = Invoice & {
   organization: Organization | null;
   customer: Customer;
   createdBy: User;
-  assignedTeam: Team | null;
   assignedMember: User | null;
   billingAddress: Address | null;
   shippingAddress: Address | null;
@@ -30,8 +29,6 @@ export function toInvoiceItemView(item: InvoiceItem): InvoiceItemView {
   const calculated = calculateInvoiceLine({
     quantity: item.quantity.toString(),
     unitPrice: item.unitPrice.toString(),
-    discount: item.discount.toString(),
-    taxRate: item.taxRate?.toString(),
   });
 
   return {
@@ -79,7 +76,6 @@ export function toInvoiceView(invoice: InvoiceRecord, now = new Date()): Invoice
     organizationId: invoice.organizationId,
     customerId: invoice.customerId,
     createdById: invoice.createdById,
-    assignedTeamId: invoice.assignedTeamId,
     assignedMemberId: invoice.assignedMemberId,
     invoiceNumber: invoice.invoiceNumber,
     status,
@@ -95,6 +91,9 @@ export function toInvoiceView(invoice: InvoiceRecord, now = new Date()): Invoice
     balanceDue,
     notes: invoice.notes,
     terms: invoice.terms,
+    shareUrl: invoice.shareToken ? invoiceShareUrl(invoice.shareToken) : null,
+    emailStatus: invoice.emailStatus ?? "NOT_SENT",
+    emailSentAt: invoice.emailSentAt?.toISOString() ?? null,
     sentAt: invoice.sentAt?.toISOString() ?? null,
     viewedAt: invoice.viewedAt?.toISOString() ?? null,
     organization: invoice.organization
@@ -103,6 +102,7 @@ export function toInvoiceView(invoice: InvoiceRecord, now = new Date()): Invoice
           name: invoice.organization.name,
           slug: invoice.organization.slug,
           isActive: invoice.organization.isActive,
+          logoUrl: null,
         }
       : null,
     customer: {
@@ -119,9 +119,6 @@ export function toInvoiceView(invoice: InvoiceRecord, now = new Date()): Invoice
       lastName: invoice.createdBy.lastName,
       email: invoice.createdBy.email,
     },
-    assignedTeam: invoice.assignedTeam
-      ? { id: invoice.assignedTeam.id, name: invoice.assignedTeam.name }
-      : null,
     assignedMember: invoice.assignedMember
       ? {
           id: invoice.assignedMember.id,
