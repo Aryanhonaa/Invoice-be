@@ -120,7 +120,6 @@ export async function loadDashboardSnapshot(
     paidInvoiceCount,
     unpaidInvoiceCount,
     overdueInvoiceCount,
-    pendingInvoiceCount,
     partialInvoiceCount,
     cancelledInvoiceCount,
     draftInvoiceCount,
@@ -176,13 +175,6 @@ export async function loadDashboardSnapshot(
       where: { ...invoiceInRange, status: { notIn: ["PAID", "CANCELLED"] } },
     }),
     prisma.invoice.count({ where: overdueWhere }),
-    prisma.invoice.count({
-      where: {
-        ...invoiceInRange,
-        status: { in: ["SENT", "VIEWED"] },
-        dueDate: { gte: startOfUtcDay(now) },
-      },
-    }),
     prisma.invoice.count({ where: { ...invoiceInRange, status: "PARTIALLY_PAID" } }),
     prisma.invoice.count({ where: { ...invoiceInRange, status: "CANCELLED" } }),
     prisma.invoice.count({ where: { ...invoiceInRange, status: "DRAFT" } }),
