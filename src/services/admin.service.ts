@@ -126,7 +126,7 @@ export async function createAdmin(
 
   return {
     user: toAdminView(admin),
-    temporaryPassword: generatedPassword,
+    temporaryPassword: generatedPassword ?? providedPassword ?? null,
     invitationToken: invitation.token,
   };
 }
