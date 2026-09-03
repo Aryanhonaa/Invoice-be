@@ -9,12 +9,14 @@ export interface AdministratorSummary {
 }
 
 export function toMemberView(
-  user: UserRecord,
+  user: UserRecord & {
+    administrator?: AdministratorSummary | null;
+  },
   organization: OrganizationRecord | null,
   administrator: AdministratorSummary | null,
 ): MemberView {
   return {
-    ...toPublicUser(user),
+    ...toPublicUser({ ...user, administrator: administrator ?? user.administrator ?? null }),
     organization: organization
       ? {
           id: organization.id,

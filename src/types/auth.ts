@@ -23,6 +23,7 @@ export interface PublicUser {
   status: AccountStatus;
   organizationId: string | null;
   permissions: PermissionCode[];
+  administrator: AdministratorSummary | null;
   lastLoginAt: string | null;
   createdAt: string;
   updatedAt: string;

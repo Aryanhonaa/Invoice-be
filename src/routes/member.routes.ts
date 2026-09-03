@@ -3,6 +3,7 @@ import { Permissions } from "../config/permissions.js";
 import {
   createMemberController,
   getMemberController,
+  listMemberAdministratorsController,
   listMembersController,
   resetMemberPasswordController,
   updateMemberController,
@@ -18,6 +19,11 @@ const memberRouter = Router();
 memberRouter.use(requireAuth, requireRole("ADMIN", "SUPER_ADMIN"));
 
 memberRouter.get("/", requirePermission(Permissions.USERS_VIEW), asyncHandler(listMembersController));
+memberRouter.get(
+  "/administrators",
+  requirePermission(Permissions.USERS_VIEW),
+  asyncHandler(listMemberAdministratorsController),
+);
 memberRouter.post(
   "/",
   requirePermission(Permissions.USERS_CREATE),

@@ -28,6 +28,7 @@ export const confirmOrganizationLogoSchema = z
 
 export const updateInvoiceSettingsSchema = z
   .object({
+    companyName: z.string().trim().min(1).max(120).optional(),
     currency: z.string().trim().min(3).max(3),
     language: z.string().trim().min(2).max(10),
     address: z

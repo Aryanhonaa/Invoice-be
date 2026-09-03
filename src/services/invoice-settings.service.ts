@@ -13,6 +13,7 @@ import { getOrganizationLogoUrl } from "./organization-logo.service.js";
 import { recordAudit } from "./audit.service.js";
 
 const KEYS = {
+  companyName: "invoice.companyName",
   currency: "invoice.currency",
   language: "invoice.language",
   addressLine1: "invoice.address.line1",
@@ -39,6 +40,7 @@ export type InvoiceAddressSettings = {
 export type InvoiceSettingsView = {
   organizationId: string;
   organizationName: string;
+  companyName: string;
   logoUrl: string | null;
   hasLogo: boolean;
   currency: string;
@@ -79,6 +81,7 @@ export async function getInvoiceSettings(actor: AuthUser): Promise<InvoiceSettin
   }
 
   const map = await getOrganizationSettingsMap(organizationId, [
+    KEYS.companyName,
     KEYS.currency,
     KEYS.language,
     KEYS.addressLine1,
@@ -94,6 +97,7 @@ export async function getInvoiceSettings(actor: AuthUser): Promise<InvoiceSettin
   return {
     organizationId,
     organizationName: organization.name,
+    companyName: map[KEYS.companyName] ?? organization.name,
     logoUrl,
     hasLogo: Boolean(organization.logoObjectKey),
     currency: map[KEYS.currency] ?? "USD",
@@ -112,14 +116,19 @@ export async function getInvoiceSettings(actor: AuthUser): Promise<InvoiceSettin
 export async function updateInvoiceSettings(
   actor: AuthUser,
   input: {
+    companyName?: string;
     currency: string;
     language: string;
     address: InvoiceAddressSettings;
   },
 ): Promise<InvoiceSettingsView> {
   const organizationId = await resolveSettingsOrganizationId(actor);
+  const canSetCompanyName = actor.role === "SUPER_ADMIN";
 
   await upsertOrganizationSettings(organizationId, {
+    ...(canSetCompanyName && input.companyName
+      ? { [KEYS.companyName]: input.companyName.trim() }
+      : {}),
     [KEYS.currency]: input.currency.trim().toUpperCase(),
     [KEYS.language]: input.language.trim().toLowerCase(),
     [KEYS.addressLine1]: input.address.line1.trim(),
@@ -136,10 +145,20 @@ export async function updateInvoiceSettings(
     entity: "Organization",
     entityId: organizationId,
     organizationId,
-    metadata: { currency: input.currency, language: input.language },
+    metadata: {
+      currency: input.currency,
+      language: input.language,
+      ...(canSetCompanyName && input.companyName ? { companyName: input.companyName.trim() } : {}),
+    },
   });
 
   return getInvoiceSettings(actor);
+}
+
+export async function getInvoiceCompanyName(organizationId: string): Promise<string | null> {
+  const map = await getOrganizationSettingsMap(organizationId, [KEYS.companyName]);
+  const name = map[KEYS.companyName]?.trim();
+  return name ? name : null;
 }
 
 export async function getEmailTemplateSettings(

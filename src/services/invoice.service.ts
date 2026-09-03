@@ -28,7 +28,7 @@ import {
 } from "../repositories/invoice.repository.js";
 import { findOrganizationById } from "../repositories/organization.repository.js";
 import { findProductById } from "../repositories/product.repository.js";
-import { findMemberById } from "../repositories/user.repository.js";
+import { findMemberById, findAdminById, listMemberIdsByAdministrator } from "../repositories/user.repository.js";
 import type { AddressInput, AuthUser } from "../types/auth.js";
 import type { InvoiceView } from "../types/invoice.js";
 import {
@@ -36,6 +36,7 @@ import {
   scopedTenantOrganizationId,
 } from "../utils/organization-scope.js";
 import { recordAudit } from "./audit.service.js";
+import { getInvoiceCompanyName } from "./invoice-settings.service.js";
 import { getOrganizationLogoUrl } from "./organization-logo.service.js";
 import { recordManualPayment } from "./payment.service.js";
 
@@ -211,8 +212,11 @@ export async function listInvoiceAccounts(
   query: {
     search?: string;
     status?: InvoiceStatus;
+    boardColumn?: "new" | "sent" | "overdue" | "paid";
     customerId?: string;
     organizationId?: string;
+    administratorId?: string;
+    assignedMemberId?: string;
     dateFrom?: string;
     dateTo?: string;
     sort?: "invoiceDate" | "dueDate" | "total" | "invoiceNumber" | "createdAt";
@@ -225,13 +229,52 @@ export async function listInvoiceAccounts(
   const userScope = await resolveInvoiceUserScope(actor);
   const now = new Date();
 
+  let userIds = userScope?.userIds;
+
+  if (query.administratorId) {
+    if (actor.role !== "SUPER_ADMIN") {
+      throw new ForbiddenError("You cannot filter invoices by administrator");
+    }
+    const admin = await findAdminById(query.administratorId);
+    if (!admin) {
+      throw new NotFoundError("Administrator not found");
+    }
+    userIds = await listMemberIdsByAdministrator(admin.id);
+  }
+
+  if (query.assignedMemberId) {
+    if (actor.role !== "SUPER_ADMIN" && actor.role !== "ADMIN") {
+      throw new ForbiddenError("You cannot filter invoices by member");
+    }
+    const member = await findMemberById(query.assignedMemberId);
+    if (!member) {
+      throw new NotFoundError("Member not found");
+    }
+    if (actor.role === "ADMIN" && member.administratorId !== actor.id) {
+      throw new ForbiddenError("You do not have access to this member");
+    }
+    if (query.administratorId && member.administratorId !== query.administratorId) {
+      throw new ForbiddenError("Member does not belong to this administrator");
+    }
+    if (userIds && !userIds.includes(member.id)) {
+      userIds = [];
+    } else {
+      userIds = [member.id];
+    }
+  }
+
   const { items, total } = await listInvoices({
     search: query.search,
-    status: query.status === "OVERDUE" ? undefined : query.status,
-    overdue: query.status === "OVERDUE",
+    status: query.boardColumn
+      ? undefined
+      : query.status === "OVERDUE"
+        ? undefined
+        : query.status,
+    overdue: query.boardColumn ? false : query.status === "OVERDUE",
+    boardColumn: query.boardColumn,
     customerId: query.customerId,
     organizationId,
-    userIds: userScope?.userIds,
+    userIds,
     dateFrom: query.dateFrom ? parseDateValue(query.dateFrom, "dateFrom") : undefined,
     dateTo: query.dateTo ? parseDateValue(query.dateTo, "dateTo") : undefined,
     sort: query.sort,
@@ -250,22 +293,8 @@ export async function listInvoiceAccounts(
   };
 }
 
-export async function getInvoiceSummaryCounts(actor: AuthUser): Promise<{
-  all: number;
-  paid: number;
-  outstanding: number;
-  overview: number;
-  void: number;
-}> {
+export async function getInvoiceSummaryCounts(actor: AuthUser) {
   const organizationId = await scopedTenantOrganizationId(actor);
-
-  if (actor.role === "MEMBER") {
-    return countInvoiceSummary({
-      organizationId,
-      createdById: actor.id,
-    });
-  }
-
   const userScope = await resolveInvoiceUserScope(actor);
   return countInvoiceSummary({
     organizationId,
@@ -582,10 +611,10 @@ export async function getPublicInvoiceByToken(token: string): Promise<PublicInvo
   }
 
   let record = invoice;
-  if (invoice.status === "SENT") {
+  if (invoice.status === "SENT" || invoice.status === "VIEWED") {
     await updateInvoice(invoice.id, {
-      status: "VIEWED",
-      viewedAt: invoice.viewedAt ?? new Date(),
+      ...(invoice.status === "SENT" ? { status: "VIEWED" as const } : {}),
+      viewedAt: new Date(),
     });
     const viewed = await findInvoiceById(invoice.id);
     if (viewed) {
@@ -593,10 +622,13 @@ export async function getPublicInvoiceByToken(token: string): Promise<PublicInvo
     }
   }
 
-  const logoUrl = await getOrganizationLogoUrl(record.organizationId, {
-    expiresInSeconds: 60 * 60,
-  });
-  return toPublicInvoiceView(record, undefined, logoUrl);
+  const [logoUrl, companyName] = await Promise.all([
+    getOrganizationLogoUrl(record.organizationId, {
+      expiresInSeconds: 60 * 60,
+    }),
+    getInvoiceCompanyName(record.organizationId),
+  ]);
+  return toPublicInvoiceView(record, undefined, logoUrl, companyName);
 }
 
 export async function duplicateInvoiceAccount(actor: AuthUser, id: string): Promise<InvoiceView> {

@@ -24,6 +24,7 @@ export async function renderInvoicePdf(
     template.render(doc, {
       invoice,
       logo: options?.logo ?? null,
+      companyName: options?.companyName ?? null,
     });
     doc.end();
   });

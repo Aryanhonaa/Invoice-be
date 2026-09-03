@@ -38,7 +38,7 @@ export const listMembersQuerySchema = z.object({
   search: z.string().trim().min(1).optional(),
   status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
   organizationId: z.string().uuid().optional(),
-  administratorId: z.string().uuid().optional(),
+  administratorId: z.union([z.string().uuid(), z.literal("none")]).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(50).default(10),
 });

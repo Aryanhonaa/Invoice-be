@@ -11,12 +11,14 @@ import { toInvoiceView, type InvoiceRecord } from "../lib/invoice-view.js";
 import { findInvoiceById, updateInvoice } from "../repositories/invoice.repository.js";
 import type { AuthUser } from "../types/auth.js";
 import type { InvoiceView } from "../types/invoice.js";
+import { getInvoiceCompanyName } from "./invoice-settings.service.js";
 import { getOrganizationLogoObject } from "./organization-logo.service.js";
 
 export async function generateInvoicePdfBuffer(invoice: InvoiceView): Promise<Buffer> {
-  const logo = invoice.organizationId
-    ? await getOrganizationLogoObject(invoice.organizationId)
-    : null;
+  const [logo, companyName] = await Promise.all([
+    invoice.organizationId ? getOrganizationLogoObject(invoice.organizationId) : Promise.resolve(null),
+    invoice.organizationId ? getInvoiceCompanyName(invoice.organizationId) : Promise.resolve(null),
+  ]);
 
   return renderInvoicePdf(invoice, undefined, {
     logo: logo
@@ -25,6 +27,7 @@ export async function generateInvoicePdfBuffer(invoice: InvoiceView): Promise<Bu
           contentType: logo.contentType,
         }
       : null,
+    companyName,
   });
 }
 

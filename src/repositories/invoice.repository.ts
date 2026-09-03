@@ -1,6 +1,7 @@
 import type { CatalogKind, InvoiceEmailStatus, InvoiceStatus, Prisma } from "@prisma/client";
 import { buildInvoiceUserAccessFilter } from "../lib/admin-scope.js";
 import { startOfUtcDay } from "../lib/date-range.js";
+import { money, moneyString } from "../lib/money.js";
 import { prisma } from "../lib/prisma.js";
 import type { InvoiceRecord } from "../lib/invoice-view.js";
 import type { AddressInput } from "../types/auth.js";
@@ -100,6 +101,7 @@ export async function listInvoices(query: {
   search?: string;
   status?: InvoiceStatus;
   overdue?: boolean;
+  boardColumn?: "new" | "sent" | "overdue" | "paid";
   customerId?: string;
   organizationId?: string;
   userIds?: string[];
@@ -111,10 +113,36 @@ export async function listInvoices(query: {
   pageSize: number;
   now?: Date;
 }): Promise<{ items: InvoiceRecord[]; total: number }> {
-  const accessFilter: Prisma.InvoiceWhereInput | undefined =
-    query.userIds && query.userIds.length > 0
+  const accessFilter: Prisma.InvoiceWhereInput | undefined = query.userIds
+    ? query.userIds.length > 0
       ? buildInvoiceUserAccessFilter(query.userIds)
-      : undefined;
+      : { id: { in: [] } }
+    : undefined;
+
+  const today = startOfUtcDay(query.now ?? new Date());
+  const boardStatusFilter = ((): Prisma.InvoiceWhereInput | undefined => {
+    if (!query.boardColumn) {
+      return undefined;
+    }
+    switch (query.boardColumn) {
+      case "new":
+        return { status: "DRAFT" };
+      case "sent":
+        return {
+          status: { in: ["SENT", "VIEWED", "PARTIALLY_PAID"] },
+          dueDate: { gte: today },
+        };
+      case "overdue":
+        return {
+          status: { notIn: ["DRAFT", "CANCELLED", "PAID"] },
+          dueDate: { lt: today },
+        };
+      case "paid":
+        return { status: "PAID" };
+      default:
+        return undefined;
+    }
+  })();
 
   const where: Prisma.InvoiceWhereInput = {
     ...(query.organizationId ? { organizationId: query.organizationId } : {}),
@@ -136,14 +164,16 @@ export async function listInvoices(query: {
           ],
         }
       : {}),
-    ...(query.overdue
-      ? {
-          status: { notIn: ["DRAFT", "CANCELLED", "PAID"] },
-          dueDate: { lt: startOfUtcDay(query.now ?? new Date()) },
-        }
-      : query.status
-        ? { status: query.status }
-        : {}),
+    ...(boardStatusFilter
+      ? boardStatusFilter
+      : query.overdue
+        ? {
+            status: { notIn: ["DRAFT", "CANCELLED", "PAID"] },
+            dueDate: { lt: today },
+          }
+        : query.status
+          ? { status: query.status }
+          : {}),
     ...(accessFilter ?? {}),
   };
 
@@ -364,27 +394,50 @@ export async function deleteInvoice(id: string): Promise<void> {
   await prisma.invoice.delete({ where: { id } });
 }
 
+export interface InvoiceBucketSummary {
+  count: number;
+  amount: string;
+}
+
 export interface InvoiceSummaryCounts {
   all: number;
   paid: number;
   outstanding: number;
   overview: number;
   void: number;
+  currency: string;
+  overdue: InvoiceBucketSummary;
+  awaitingPayment: InvoiceBucketSummary;
+  notSent: InvoiceBucketSummary;
+  paidInvoices: InvoiceBucketSummary;
+}
+
+function bucketAmount(
+  totals: { total: { toString(): string } | null; amountPaid: { toString(): string } | null },
+  kind: "balance" | "total" | "paid",
+): string {
+  const total = money(totals.total?.toString() ?? "0");
+  const amountPaid = money(totals.amountPaid?.toString() ?? "0");
+  if (kind === "balance") {
+    return moneyString(total.minus(amountPaid));
+  }
+  if (kind === "total") {
+    return moneyString(total);
+  }
+  return moneyString(amountPaid);
 }
 
 /**
  * Counts invoices for summary cards.
- * When createdById is set, only invoices created by that user are included.
+ * When userIds is set, only invoices the user can access are included.
  */
 export async function countInvoiceSummary(query: {
   organizationId?: string;
-  createdById?: string;
   userIds?: string[];
   now?: Date;
 }): Promise<InvoiceSummaryCounts> {
-  const accessFilter: Prisma.InvoiceWhereInput | undefined = query.createdById
-    ? { createdById: query.createdById }
-    : query.userIds && query.userIds.length > 0
+  const accessFilter: Prisma.InvoiceWhereInput | undefined =
+    query.userIds && query.userIds.length > 0
       ? buildInvoiceUserAccessFilter(query.userIds)
       : undefined;
 
@@ -394,10 +447,39 @@ export async function countInvoiceSummary(query: {
   };
 
   const today = startOfUtcDay(query.now ?? new Date());
+  const overdueWhere: Prisma.InvoiceWhereInput = {
+    ...base,
+    status: { notIn: ["DRAFT", "CANCELLED", "PAID"] },
+    dueDate: { lt: today },
+  };
+  const awaitingPaymentWhere: Prisma.InvoiceWhereInput = {
+    ...base,
+    status: { in: ["SENT", "VIEWED", "PARTIALLY_PAID"] },
+    dueDate: { gte: today },
+  };
+  const notSentWhere: Prisma.InvoiceWhereInput = {
+    ...base,
+    status: "DRAFT",
+  };
+  const paidWhere: Prisma.InvoiceWhereInput = {
+    ...base,
+    status: "PAID",
+  };
 
-  const [all, paid, voidCount, outstanding, overview] = await prisma.$transaction([
+  const [
+    all,
+    paid,
+    voidCount,
+    outstanding,
+    overview,
+    currencyRow,
+    overdueAgg,
+    awaitingAgg,
+    notSentAgg,
+    paidAgg,
+  ] = await prisma.$transaction([
     prisma.invoice.count({ where: base }),
-    prisma.invoice.count({ where: { ...base, status: "PAID" } }),
+    prisma.invoice.count({ where: paidWhere }),
     prisma.invoice.count({ where: { ...base, status: "CANCELLED" } }),
     prisma.invoice.count({
       where: {
@@ -405,18 +487,36 @@ export async function countInvoiceSummary(query: {
         status: { in: ["SENT", "VIEWED", "OVERDUE", "PARTIALLY_PAID"] },
       },
     }),
-    // Overview: drafts to finish/send + overdue invoices needing attention
     prisma.invoice.count({
       where: {
         ...base,
-        OR: [
-          { status: "DRAFT" },
-          {
-            status: { in: ["SENT", "VIEWED", "OVERDUE"] },
-            dueDate: { lt: today },
-          },
-        ],
+        OR: [{ status: "DRAFT" }, overdueWhere],
       },
+    }),
+    prisma.invoice.findFirst({
+      where: base,
+      select: { currency: true },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.invoice.aggregate({
+      where: overdueWhere,
+      _count: { _all: true },
+      _sum: { total: true, amountPaid: true },
+    }),
+    prisma.invoice.aggregate({
+      where: awaitingPaymentWhere,
+      _count: { _all: true },
+      _sum: { total: true, amountPaid: true },
+    }),
+    prisma.invoice.aggregate({
+      where: notSentWhere,
+      _count: { _all: true },
+      _sum: { total: true, amountPaid: true },
+    }),
+    prisma.invoice.aggregate({
+      where: paidWhere,
+      _count: { _all: true },
+      _sum: { total: true, amountPaid: true },
     }),
   ]);
 
@@ -426,6 +526,23 @@ export async function countInvoiceSummary(query: {
     outstanding,
     overview,
     void: voidCount,
+    currency: currencyRow?.currency ?? "USD",
+    overdue: {
+      count: overdueAgg._count._all,
+      amount: bucketAmount(overdueAgg._sum, "balance"),
+    },
+    awaitingPayment: {
+      count: awaitingAgg._count._all,
+      amount: bucketAmount(awaitingAgg._sum, "balance"),
+    },
+    notSent: {
+      count: notSentAgg._count._all,
+      amount: bucketAmount(notSentAgg._sum, "total"),
+    },
+    paidInvoices: {
+      count: paidAgg._count._all,
+      amount: bucketAmount(paidAgg._sum, "paid"),
+    },
   };
 }
 

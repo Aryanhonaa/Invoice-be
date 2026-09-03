@@ -4,6 +4,7 @@ import {
   getEmailTemplatesController,
   getInvoiceSettingsController,
   getOrganizationSettingsController,
+  getPayPalConnectUrlController,
   createOrganizationLogoUploadUrlController,
   removeOrganizationLogoController,
   updateEmailTemplatesController,
@@ -97,6 +98,14 @@ settingsRouter.delete(
   requireRole("SUPER_ADMIN"),
   requirePermission(Permissions.SETTINGS_UPDATE),
   asyncHandler(removeOrganizationLogoController),
+);
+
+settingsRouter.get(
+  "/payment/paypal/connect",
+  requireAuth,
+  requireRole("SUPER_ADMIN"),
+  requirePermission(Permissions.SETTINGS_UPDATE),
+  asyncHandler(getPayPalConnectUrlController),
 );
 
 export { settingsRouter };

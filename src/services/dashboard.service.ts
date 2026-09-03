@@ -34,15 +34,15 @@ export async function getDashboard(
 
   const isSuperAdmin = actor.role === "SUPER_ADMIN";
   const isMember = actor.role === "MEMBER";
-  const isSystem = isSuperAdmin && !organizationId;
+  const isSystem = isSuperAdmin;
   const canViewExpenses =
     !isMember && !isAdmin && actor.permissions.includes(Permissions.EXPENSES_VIEW);
 
-  const platformOrganizations = isSystem ? await listOrganizations() : [];
-  const activeOrganizations = isSystem
+  const platformOrganizations = isSuperAdmin ? await listOrganizations() : [];
+  const activeOrganizations = isSuperAdmin
     ? platformOrganizations.filter((organization) => organization.isActive).length
     : null;
-  const inactiveOrganizations = isSystem
+  const inactiveOrganizations = isSuperAdmin
     ? platformOrganizations.filter((organization) => !organization.isActive).length
     : null;
 

@@ -4,6 +4,7 @@ import {
   createMember,
   getMemberAccount,
   listMemberAccounts,
+  listMemberAdministratorOptions,
   resetMemberPassword,
   updateMember,
   updateMemberStatus,
@@ -29,6 +30,14 @@ export async function listMembersController(req: Request, res: Response): Promis
   const actor = requireActor(req);
   const query = validate(listMembersQuerySchema, req.query);
   const result = await listMemberAccounts(actor, query);
+  res.status(200).json(success(result));
+}
+
+export async function listMemberAdministratorsController(req: Request, res: Response): Promise<void> {
+  const actor = requireActor(req);
+  const organizationId =
+    typeof req.query.organizationId === "string" ? req.query.organizationId : undefined;
+  const result = await listMemberAdministratorOptions(actor, { organizationId });
   res.status(200).json(success(result));
 }
 

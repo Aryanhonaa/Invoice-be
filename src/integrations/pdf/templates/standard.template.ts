@@ -43,9 +43,9 @@ export const standardInvoiceTemplate: InvoicePdfTemplate = {
   id: "standard",
   name: "Standard invoice",
   render(doc, context: InvoicePdfContext) {
-    const { invoice, logo } = context;
+    const { invoice, logo, companyName: brandedName } = context;
     let y = 50;
-    const companyName = invoice.organization?.name ?? "Company";
+    const companyName = brandedName?.trim() || invoice.organization?.name || "Company";
 
     if (logo?.body?.length) {
       drawLogo(doc, logo, PAGE_LEFT, y);

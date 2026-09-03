@@ -13,6 +13,7 @@ import {
   updateEmailTemplateSettings,
   updateInvoiceSettings,
 } from "../services/invoice-settings.service.js";
+import { getPayPalConnectUrl } from "../services/paypal-connect.service.js";
 import { success } from "../utils/api-response.js";
 import { validate } from "../validators/validate.js";
 import {
@@ -110,4 +111,10 @@ export async function updateEmailTemplatesController(req: Request, res: Response
   const body = validate(updateEmailTemplatesSchema, req.body);
   const templates = await updateEmailTemplateSettings(actor, body);
   res.status(200).json(success({ templates }));
+}
+
+export async function getPayPalConnectUrlController(req: Request, res: Response): Promise<void> {
+  const actor = requireActor(req);
+  const result = getPayPalConnectUrl(actor);
+  res.status(200).json(success(result));
 }

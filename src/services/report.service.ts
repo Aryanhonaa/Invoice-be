@@ -7,14 +7,18 @@ import { resolveDateRange, type DatePreset } from "../lib/date-range.js";
 import { ForbiddenError, NotFoundError } from "../lib/errors.js";
 import { getSoleOrganizationId, listOrganizations } from "../repositories/organization.repository.js";
 import { loadReport } from "../repositories/report.repository.js";
-import { findMemberById } from "../repositories/user.repository.js";
+import {
+  findAdminById,
+  findMemberById,
+  listMemberIdsByAdministrator,
+} from "../repositories/user.repository.js";
 import type { AuthUser } from "../types/auth.js";
 import type { ReportKind, ReportView } from "../types/report.js";
 import { scopedOrganizationFilter } from "../utils/organization-scope.js";
 
 async function resolveReportAccess(
   actor: AuthUser,
-  memberId?: string,
+  query: { memberId?: string; administratorId?: string },
 ): Promise<{
   userIds?: string[];
   administratorId?: string;
@@ -30,12 +34,48 @@ async function resolveReportAccess(
     };
   }
 
-  if (memberId) {
+  if (query.administratorId) {
+    if (actor.role !== "SUPER_ADMIN") {
+      throw new ForbiddenError("You cannot filter reports by administrator");
+    }
+
+    const admin = await findAdminById(query.administratorId);
+    if (!admin) {
+      throw new NotFoundError("Administrator not found");
+    }
+
+    if (query.memberId) {
+      const member = await findMemberById(query.memberId);
+      if (!member) {
+        throw new NotFoundError("Member not found");
+      }
+      if (member.administratorId !== admin.id) {
+        throw new ForbiddenError("Member does not belong to this administrator");
+      }
+
+      return {
+        userIds: [member.id],
+        administratorId: admin.id,
+        expenseCreatedById: member.id,
+        memberId: member.id,
+      };
+    }
+
+    const memberIds = await listMemberIdsByAdministrator(admin.id);
+    return {
+      userIds: memberIds,
+      administratorId: admin.id,
+      expenseCreatedById: undefined,
+      memberId: null,
+    };
+  }
+
+  if (query.memberId) {
     if (actor.role !== "ADMIN" && actor.role !== "SUPER_ADMIN") {
       throw new ForbiddenError("You cannot filter reports by member");
     }
 
-    const member = await findMemberById(memberId);
+    const member = await findMemberById(query.memberId);
     if (!member) {
       throw new NotFoundError("Member not found");
     }
@@ -70,6 +110,7 @@ export async function getReport(
     dateFrom?: string;
     dateTo?: string;
     organizationId?: string;
+    administratorId?: string;
     memberId?: string;
     page: number;
     pageSize: number;
@@ -81,7 +122,10 @@ export async function getReport(
       ? (query.organizationId ?? (await getSoleOrganizationId()) ?? undefined)
       : scopedOrganizationFilter(actor, query.organizationId);
   const range = resolveDateRange(query.preset, query.dateFrom, query.dateTo);
-  const access = await resolveReportAccess(actor, query.memberId);
+  const access = await resolveReportAccess(actor, {
+    memberId: query.memberId,
+    administratorId: query.administratorId,
+  });
 
   const loaded = await loadReport({
     kind: query.kind,

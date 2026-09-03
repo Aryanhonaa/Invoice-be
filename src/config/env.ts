@@ -21,8 +21,27 @@ const envSchema = z.object({
   BOOTSTRAP_SUPER_ADMIN_LAST_NAME: z.string().optional(),
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
-  PAYPAL_CLIENT_ID: z.string().optional(),
-  PAYPAL_CLIENT_SECRET: z.string().optional(),
+  PAYPAL_CLIENT_ID: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  PAYPAL_CLIENT_SECRET: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  PAYPAL_ENV: z.preprocess(
+    (value) => (value === "" || value == null ? "sandbox" : value),
+    z.enum(["sandbox", "live"]).default("sandbox"),
+  ),
+  PAYPAL_REDIRECT_URI: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().url().optional(),
+  ),
+  /** Optional full Connect URL override (for temporary/manual testing). */
+  PAYPAL_CONNECT_URL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().url().optional(),
+  ),
   RESEND_API_KEY: z.preprocess(
     (value) => (value === "" ? undefined : value),
     z.string().min(1).optional(),

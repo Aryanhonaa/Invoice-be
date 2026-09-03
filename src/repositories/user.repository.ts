@@ -29,6 +29,22 @@ export async function findUserById(id: string): Promise<UserRecord | null> {
   });
 }
 
+export async function findUserByIdWithProfile(id: string): Promise<
+  | (UserRecord & {
+      administrator: { id: string; firstName: string; lastName: string; email: string } | null;
+    })
+  | null
+> {
+  return prisma.user.findUnique({
+    where: { id },
+    include: {
+      administrator: {
+        select: { id: true, firstName: true, lastName: true, email: true },
+      },
+    },
+  });
+}
+
 export async function findAdminById(id: string): Promise<AdminRecord | null> {
   return prisma.user.findFirst({
     where: { id, role: "ADMIN" },
@@ -179,7 +195,11 @@ export async function listMembers(query: {
     role: "MEMBER",
     ...(query.status ? { status: query.status } : {}),
     ...(query.organizationId ? { organizationId: query.organizationId } : {}),
-    ...(query.administratorId ? { administratorId: query.administratorId } : {}),
+    ...(query.administratorId === "none"
+      ? { administratorId: null }
+      : query.administratorId
+        ? { administratorId: query.administratorId }
+        : {}),
     ...(query.search
       ? {
           OR: [
@@ -204,4 +224,43 @@ export async function listMembers(query: {
   ]);
 
   return { items, total };
+}
+
+export async function listMemberAdministrators(query?: {
+  organizationId?: string;
+}): Promise<{
+  items: Array<{ id: string; firstName: string; lastName: string; email: string }>;
+  unassignedCount: number;
+}> {
+  const memberWhere: Prisma.UserWhereInput = {
+    role: "MEMBER",
+    ...(query?.organizationId ? { organizationId: query.organizationId } : {}),
+  };
+
+  const [memberAdministrators, unassignedCount] = await prisma.$transaction([
+    prisma.user.findMany({
+      where: { ...memberWhere, administratorId: { not: null } },
+      select: { administratorId: true },
+      distinct: ["administratorId"],
+    }),
+    prisma.user.count({
+      where: { ...memberWhere, administratorId: null },
+    }),
+  ]);
+
+  const administratorIds = memberAdministrators
+    .map((member) => member.administratorId)
+    .filter((id): id is string => Boolean(id));
+
+  if (administratorIds.length === 0) {
+    return { items: [], unassignedCount };
+  }
+
+  const items = await prisma.user.findMany({
+    where: { id: { in: administratorIds } },
+    select: { id: true, firstName: true, lastName: true, email: true },
+    orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+  });
+
+  return { items, unassignedCount };
 }

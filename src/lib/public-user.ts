@@ -1,5 +1,9 @@
 import { getRolePermissions } from "../config/permissions.js";
-import type { AdminRecord, AdminView, AuthUser, PublicUser, UserRecord } from "../types/auth.js";
+import type { AdminRecord, AdminView, AuthUser, PublicUser, UserRecord, AdministratorSummary } from "../types/auth.js";
+
+type UserProfileRecord = UserRecord & {
+  administrator?: AdministratorSummary | null;
+};
 
 export function toAuthUser(user: UserRecord): AuthUser {
   return {
@@ -14,11 +18,21 @@ export function toAuthUser(user: UserRecord): AuthUser {
   };
 }
 
-export function toPublicUser(user: UserRecord, avatarUrl: string | null = null): PublicUser {
+export function toPublicUser(user: UserProfileRecord, avatarUrl: string | null = null): PublicUser {
+  const administrator = user.administrator
+    ? {
+        id: user.administrator.id,
+        firstName: user.administrator.firstName,
+        lastName: user.administrator.lastName,
+        email: user.administrator.email,
+      }
+    : null;
+
   return {
     ...toAuthUser(user),
     phone: user.phone,
     avatarUrl,
+    administrator,
     lastLoginAt: user.lastLoginAt?.toISOString() ?? null,
     createdAt: user.createdAt.toISOString(),
     updatedAt: user.updatedAt.toISOString(),

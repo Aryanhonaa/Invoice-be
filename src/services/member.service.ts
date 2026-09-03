@@ -10,6 +10,7 @@ import {
   createUser,
   findMemberById,
   findUserByEmail,
+  listMemberAdministrators,
   listMembers,
   updateUser,
 } from "../repositories/user.repository.js";
@@ -60,6 +61,21 @@ export async function listMemberAccounts(
     total,
     totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
   };
+}
+
+export async function listMemberAdministratorOptions(
+  actor: AuthUser,
+  query: { organizationId?: string } = {},
+): Promise<{
+  items: Array<{ id: string; firstName: string; lastName: string; email: string }>;
+  unassignedCount: number;
+}> {
+  if (actor.role !== "SUPER_ADMIN") {
+    throw new ForbiddenError("You cannot view member administrator filters");
+  }
+
+  const organizationId = scopedOrganizationFilter(actor, query.organizationId);
+  return listMemberAdministrators({ organizationId });
 }
 
 export async function getMemberAccount(actor: AuthUser, id: string): Promise<MemberView> {

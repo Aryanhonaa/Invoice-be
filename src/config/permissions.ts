@@ -69,6 +69,7 @@ const ADMIN_ALLOWED: ReadonlySet<PermissionCode> = new Set([
   Permissions.USERS_CREATE,
   Permissions.USERS_UPDATE,
   Permissions.USERS_DELETE,
+  Permissions.INVOICES_VIEW,
   Permissions.REPORTS_VIEW,
   Permissions.SETTINGS_VIEW,
   Permissions.SETTINGS_UPDATE,

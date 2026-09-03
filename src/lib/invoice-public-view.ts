@@ -41,6 +41,7 @@ export function toPublicInvoiceView(
   invoice: InvoiceRecord,
   now = new Date(),
   organizationLogoUrl: string | null = null,
+  companyName?: string | null,
 ): PublicInvoiceView {
   const total = moneyString(invoice.total.toString());
   const amountPaid = moneyString(
@@ -74,7 +75,7 @@ export function toPublicInvoiceView(
     balanceDue,
     notes: invoice.notes,
     terms: invoice.terms,
-    organizationName: invoice.organization?.name ?? "Company",
+    organizationName: companyName?.trim() || invoice.organization?.name || "Company",
     organizationLogoUrl,
     customer: {
       name: invoice.customer.name,

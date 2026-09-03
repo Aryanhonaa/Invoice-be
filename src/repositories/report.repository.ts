@@ -52,7 +52,11 @@ export async function loadReport(
   const expenseWhere: Prisma.ExpenseWhereInput = {
     incurredOn: { gte: input.range.start, lt: input.range.end },
     ...(input.scope.organizationId ? { organizationId: input.scope.organizationId } : {}),
-    ...(input.scope.expenseCreatedById ? { createdById: input.scope.expenseCreatedById } : {}),
+    ...(input.scope.expenseCreatedById
+      ? { createdById: input.scope.expenseCreatedById }
+      : input.scope.userIds
+        ? { createdById: { in: input.scope.userIds } }
+        : {}),
   };
   const overdueWhere: Prisma.InvoiceWhereInput = {
     ...invoiceWhere,

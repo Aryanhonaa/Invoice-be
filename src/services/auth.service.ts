@@ -31,6 +31,7 @@ import {
   createUser,
   findUserByEmail,
   findUserById,
+  findUserByIdWithProfile,
   updateUser,
 } from "../repositories/user.repository.js";
 import type { PublicUser, UserRecord } from "../types/auth.js";
@@ -48,7 +49,11 @@ async function assertActiveOrganization(organizationId: string | null): Promise<
   }
 }
 
-async function withAvatar(user: UserRecord): Promise<PublicUser> {
+async function withAvatar(
+  user: UserRecord & {
+    administrator?: { id: string; firstName: string; lastName: string; email: string } | null;
+  },
+): Promise<PublicUser> {
   let avatarUrl: string | null = null;
   if (user.avatarObjectKey && isR2Configured()) {
     try {
@@ -61,6 +66,18 @@ async function withAvatar(user: UserRecord): Promise<PublicUser> {
     }
   }
   return toPublicUser(user, avatarUrl);
+}
+
+async function loadActivePublicUser(userId: string): Promise<PublicUser> {
+  const user = await findUserByIdWithProfile(userId);
+
+  if (!user || user.status !== "ACTIVE") {
+    throw new UnauthorizedError("Authentication required");
+  }
+
+  await assertActiveOrganization(user.organizationId);
+
+  return withAvatar(user);
 }
 
 function buildAvatarKey(userId: string, contentType: string): string {
@@ -130,7 +147,7 @@ export async function login(input: {
     userAgent: input.userAgent,
   });
 
-  return { user: await withAvatar(updated), token };
+  return { user: await loadActivePublicUser(updated.id), token };
 }
 
 export async function logout(input: {
@@ -156,15 +173,7 @@ export async function logout(input: {
 }
 
 export async function getAuthenticatedUser(userId: string): Promise<PublicUser> {
-  const user = await findUserById(userId);
-
-  if (!user || user.status !== "ACTIVE") {
-    throw new UnauthorizedError("Authentication required");
-  }
-
-  await assertActiveOrganization(user.organizationId);
-
-  return withAvatar(user);
+  return loadActivePublicUser(userId);
 }
 
 export async function updateProfile(
@@ -190,7 +199,7 @@ export async function updateProfile(
     organizationId: updated.organizationId,
   });
 
-  return withAvatar(updated);
+  return loadActivePublicUser(actorId);
 }
 
 export async function changePassword(
@@ -284,7 +293,7 @@ export async function confirmAvatarUpload(
     organizationId: updated.organizationId,
   });
 
-  return withAvatar(updated);
+  return loadActivePublicUser(actorId);
 }
 
 export async function removeAvatar(actorId: string): Promise<PublicUser> {
@@ -293,7 +302,7 @@ export async function removeAvatar(actorId: string): Promise<PublicUser> {
     throw new NotFoundError("User not found");
   }
   const previous = user.avatarObjectKey;
-  const updated = await updateUser(actorId, { avatarObjectKey: null });
+  await updateUser(actorId, { avatarObjectKey: null });
   if (previous && isR2Configured()) {
     try {
       await deleteObject(previous);
@@ -301,7 +310,7 @@ export async function removeAvatar(actorId: string): Promise<PublicUser> {
       // best effort
     }
   }
-  return withAvatar(updated);
+  return loadActivePublicUser(actorId);
 }
 
 export async function resolveSessionUser(token: string | undefined): Promise<UserRecord> {

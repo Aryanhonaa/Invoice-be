@@ -7,11 +7,13 @@ export interface InvoicePdfLogo {
 
 export interface InvoicePdfRenderOptions {
   logo?: InvoicePdfLogo | null;
+  companyName?: string | null;
 }
 
 export interface InvoicePdfContext {
   invoice: InvoiceView;
   logo?: InvoicePdfLogo | null;
+  companyName?: string | null;
 }
 
 export interface InvoicePdfTemplate {
